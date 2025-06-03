@@ -1,8 +1,8 @@
 from vagen.env.base.base_env import BaseEnv
-from vagen.env.alfworld.alfworld_utils import load_alfworld_dataset
+# from vagen.env.alfworld.alfworld_utils import load_alfworld_dataset
 from vagen.env.utils.context_utils import parse_llm_raw_response, convert_numpy_to_PIL
 from vagen.env.utils.parse_utils import PARSE_FUNC_MAP
-from .env_config import AlfEnvConfig
+from .env_config import ALFWorldEnvConfig
 from .prompt import (
     system_prompt,
     init_observation_template,
@@ -28,7 +28,7 @@ class ALFWorldEnv(BaseEnv):
     as agents, providing structured observations and handling text-based actions.
     """
     
-    def __init__(self, config: AlfEnvConfig):
+    def __init__(self, config: ALFWorldEnvConfig):
         """Initialize the ALFRED environment.
         
         Args:

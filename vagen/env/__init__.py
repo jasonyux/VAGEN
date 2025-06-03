@@ -1,6 +1,8 @@
 # First, import the modules that are assumed to be always available
 from .sokoban import SokobanEnv, SokobanEnvConfig, SokobanService, SokobanServiceConfig
 from .frozenlake import FrozenLakeEnv, FrozenLakeEnvConfig, FrozenLakeService, FrozenLakeServiceConfig
+from .sokoban_terminal import SokobanTerminalEnv, SokobanTerminalEnvConfig, SokobanTerminalService, SokobanTerminalServiceConfig
+
 
 REGISTERED_ENV = {
     "sokoban": {
@@ -14,6 +16,13 @@ REGISTERED_ENV = {
         "config_cls": FrozenLakeEnvConfig,
         "service_cls": FrozenLakeService,
         "service_config_cls": FrozenLakeServiceConfig
+    },
+    ### newly added
+    "sokoban_terminal": {
+        "env_cls": SokobanTerminalEnv,
+        "config_cls": SokobanTerminalEnvConfig,
+        "service_cls": SokobanTerminalService,
+        "service_config_cls": SokobanTerminalServiceConfig
     }
 }
 

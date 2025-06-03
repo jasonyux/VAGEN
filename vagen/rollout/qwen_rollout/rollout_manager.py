@@ -347,6 +347,11 @@ class QwenVLRolloutManager():
         prompt_with_chat_template = prompt_with_chat_template.replace(
             f'{self.config.special_token_for_loss_mask[1]}{self.tokenizer.eos_token}',
             f'{self.tokenizer.eos_token}{self.config.special_token_for_loss_mask[1]}')
+        
+        print((
+            f"[DEBUG] _single_recording_to_prompt: {env_id=} {step=} {is_final=} {rewards=}; "
+            f"has {len(image_data)} images."
+        ))
         return {
             "prompt": prompt_with_chat_template,
             "image_data": image_data,
@@ -593,8 +598,6 @@ class QwenVLRolloutManager():
             
             output_batch = self.actor_rollout_wg.generate_sequences(gen_batch)
             
-            
-            
             responses_str = self.tokenizer.batch_decode(
                 output_batch.batch['responses'], 
                 skip_special_tokens=True
@@ -609,6 +612,8 @@ class QwenVLRolloutManager():
                     self.env_states[env_id]['metrics']['turn_metrics'][k].append(v)
                 
                 self.record(env_id, obs, reward, done, info)
+                print(f"[DEBUG] rollout_loop: {env_id=} {step=} {reward=}, {done=} after stepping {responses_str[batch_idx]}")
+        return
         
     @torch.no_grad()
     def generate_batch_for_update(self) -> DataProto:
@@ -628,11 +633,19 @@ class QwenVLRolloutManager():
             step_reward_sum= row_dict['step_reward_sum']
             last_reward=self.envs[env_id].compute_reward()
             row_dict['reward_model'] = {"style": "given", "ground_truth": {"reward": last_reward+step_reward_sum}}
+            print(f"[DEBUG] generate_input_for_update: {env_id=} {last_reward=}, {step_reward_sum=}")
             if self.config.use_multi_turn_reward:
                 end_of_response_position_mask = row_dict['end_of_response_position_mask']
                 reward_positions = torch.nonzero(end_of_response_position_mask).squeeze(-1)
                 last_reward_index = reward_positions[-1]
+                _multi_turn_token_level_rewards = row_dict['multi_turn_token_level_rewards']
                 row_dict['multi_turn_token_level_rewards'][last_reward_index] += last_reward
+                _new_multi_turn_token_level_rewards = row_dict['multi_turn_token_level_rewards']
+                print((
+                    f"[DEBUG] generate_input_for_update: {env_id=} BEFORE: {_multi_turn_token_level_rewards.sum(dim=-1)=}, "
+                    f"AFTER: {_new_multi_turn_token_level_rewards.sum(dim=-1)=}. "
+                    f"RAW: {_multi_turn_token_level_rewards=}, {_new_multi_turn_token_level_rewards=}"
+                ))
             batch_list.append(row_dict)
         batch_dict = collate_fn(batch_list)
         batch = DataProto.from_single_dict(batch_dict)
@@ -653,7 +666,15 @@ class QwenVLRolloutManager():
             output_rst = self._single_recording_to_prompt(record, self.env_states[env_id]['step'], window_size=None, is_final=False)
             image= output_rst['image_data']
             done = self.env_states[env_id]['done']
-            score = self.envs[env_id].compute_reward()+sum(output_rst['rewards'])
+            # score = self.envs[env_id].compute_reward()+sum(output_rst['rewards'])
+            _terminal_reward = self.envs[env_id].compute_reward()
+            score = _terminal_reward + sum(output_rst['rewards'])
+            
+            print((
+                f"[DEBUG] recording_to_log: {env_id=} {step=} {done=} {output_rst['rewards']=} {_terminal_reward=} {score=}; "
+                f"chat with {len(output_rst['image_data'])} images; "
+                f"raw_chat: {output_rst['prompt']}"
+            ))
             
             metrics={
                 "score": score,

@@ -12,11 +12,15 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 #     --test_path "data/sokoban-vision-debug/test.parquet" \
 
 # max_trajectory_length = max_prompt_length + max_response_length
-exp_name="aico_sokoban_vision"
-rm -rf logs/$exp_name
+lr=1e-6 # default: 1e-6
+use_kl_loss=True # default: False
+use_multi_turn_reward=False  # default: False
+exp_name=rfplusplus_sokoban_vision-mtreward$use_multi_turn_reward-lr$lr-kl$use_kl_loss
+
+rm -f logs/$exp_name.log
 
 python3 -m vagen.trainer.main_ppo \
-    algorithm.adv_estimator=masked_gae \
+    algorithm.adv_estimator=reinforce_plus_plus \
     algorithm.high_level_gamma=0.95 \
     data.train_files=data/sokoban-vision-debug/train.parquet \
     data.val_files=data/sokoban-vision-debug/test.parquet \
@@ -27,11 +31,11 @@ python3 -m vagen.trainer.main_ppo \
     data.image_key=images \
     data.truncation=left \
     actor_rollout_ref.model.path=Qwen/Qwen2.5-VL-3B-Instruct \
-    actor_rollout_ref.actor.optim.lr=1e-6 \
+    actor_rollout_ref.actor.optim.lr=${lr} \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=32 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
-    actor_rollout_ref.actor.use_kl_loss=False \
+    actor_rollout_ref.actor.use_kl_loss=${use_kl_loss} \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
     actor_rollout_ref.actor.kl_loss_type=mse \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
@@ -68,9 +72,8 @@ python3 -m vagen.trainer.main_ppo \
     trainer.total_training_steps=300 \
     rollout_manager.max_turns=3 \
     rollout_manager.window_size=5 \
-    rollout_manager.use_multi_turn_reward=False \
+    rollout_manager.use_multi_turn_reward=$use_multi_turn_reward \
     rollout_manager.use_loss_mask=True \
-    rollout_manager.use_gae_mask=True \
     trainer.val_before_train=True \
     trainer.val_generations_to_log_to_wandb=8 \
     rollout_manager.n_trajectory=2 \

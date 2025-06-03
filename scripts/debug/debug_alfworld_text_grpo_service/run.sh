@@ -13,6 +13,8 @@ python -m vagen.env.create_dataset \
     --force_gen
 
 # max_trajectory_length = max_prompt_length + max_response_length
+exp_name="grpo_mask_loss_alfworld_text_debug"
+rm -f logs/${exp_name}.log
 
 python3 -m vagen.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
@@ -58,8 +60,8 @@ python3 -m vagen.trainer.main_ppo \
     algorithm.kl_ctrl.kl_coef=0.01 \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
-    trainer.project_name='vagen_debug' \
-    trainer.experiment_name='grpo_mask_loss_alfworld_text_debug' \
+    trainer.project_name='dyna_rl' \
+    trainer.experiment_name=${exp_name} \
     trainer.n_gpus_per_node=1 \
     trainer.nnodes=1 \
     trainer.save_freq=100 \
@@ -73,4 +75,4 @@ python3 -m vagen.trainer.main_ppo \
     trainer.val_generations_to_log_to_wandb=8 \
     rollout_manager.n_trajectory=8 \
     rollout_manager.use_service=True \
-    2>&1 | tee grpo_mask_loss.log
+    2>&1 | tee logs/${exp_name}.log
