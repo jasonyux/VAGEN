@@ -54,7 +54,18 @@ class RayPPOTrainer:
 
 ## Environment
 
-Each task instance is prepared as a dataset parquet file, with each row being:
+
+The main entry point for environments to be used during rollouts is:
+- via env APIs `vagen.rollout.qwen_rollout.rollout_manager.QwenVLRolloutManager`
+- via service APIs `vagen.rollout.qwen_rollout.rollout_manager_service.QwenVLRolloutManagerService`
+
+These classes provide code to 1) create the env class; 2) rollout with vllm engine; 3) pipe data pack to trainer.
+
+
+### Env config data format
+
+The configurations used for creating env class via `env.reset()` are stored in the dataset parquet file.
+Each task instance is prepared as a row in the parquet file, an example being:
 ```json
 {
     "data_source": "sokoban",  # needed

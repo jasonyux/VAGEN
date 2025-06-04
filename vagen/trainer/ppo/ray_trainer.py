@@ -18,6 +18,7 @@ This trainer supports model-agonistic model initialization with huggingface
 
 import os
 import uuid
+import datetime
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
@@ -42,6 +43,9 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 
 from vagen.rollout.qwen_rollout.rollout_manager import QwenVLRolloutManager
 from vagen.rollout.qwen_rollout.rollout_manager_service import QwenVLRolloutManagerService
+from vagen.trainer.ppo.core_algos import (
+    compute_reinforce_plus_plus_outcome_advantage_with_loss_mask
+)
 WorkerType = Type[Worker]
 
 
@@ -145,11 +149,25 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         attention_mask = data.batch['attention_mask']
         response_mask = attention_mask[:, -response_length:]
         token_level_rewards = data.batch['token_level_rewards']
-        advantages, returns = core_algos.compute_gae_advantage_return(token_level_rewards=token_level_rewards,
-                                                                    values=values,
-                                                                    eos_mask=response_mask,
-                                                                    gamma=gamma,
-                                                                    lam=lam)
+
+        if "loss_mask" in data.batch.keys():
+            print(f"[DEBUG] compute_advantage: loss_mask={data.batch['loss_mask']}")
+            loss_mask = data.batch['loss_mask'][:, -response_length:]
+            advantages, returns = core_algos.compute_gae_advantage_return(
+                token_level_rewards=token_level_rewards,
+                values=values,
+                eos_mask=loss_mask,
+                gamma=gamma,
+                lam=lam
+            )
+        else:
+            advantages, returns = core_algos.compute_gae_advantage_return(
+                token_level_rewards=token_level_rewards,
+                values=values,
+                eos_mask=response_mask,
+                gamma=gamma,
+                lam=lam
+            )
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     elif adv_estimator == AdvantageEstimator.MASKED_GAE:
@@ -160,11 +178,20 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         response_mask = attention_mask[:, -response_length:]
         token_level_rewards = data.batch['token_level_rewards']
         gae_mask = data.batch['gae_mask'][:, -response_length:]
-        advantages, returns =core_algos.compute_gae_advantage_return_with_loss_mask(token_level_rewards=token_level_rewards,
-                                                                values=values,
-                                                                loss_mask=gae_mask,
-                                                                gamma=gamma,
-                                                                lam=lam)
+        # print(f"[DEBUG] compute_advantage using compute_gae_advantage_return_with_loss_mask")
+        # advantages, returns =core_algos.compute_gae_advantage_return_with_loss_mask(token_level_rewards=token_level_rewards,
+        #                                                         values=values,
+        #                                                         loss_mask=gae_mask,
+        #                                                         gamma=gamma,
+        #                                                         lam=lam)
+        print(f"[DEBUG] compute_advantage using compute_gae_advantage_return")
+        advantages, returns = core_algos.compute_gae_advantage_return(
+            token_level_rewards=token_level_rewards,
+            values=values,
+            eos_mask=gae_mask,
+            gamma=gamma,
+            lam=lam
+        )
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     elif adv_estimator == AdvantageEstimator.BI_LEVEL_GAE:
@@ -173,21 +200,24 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         response_length = responses.size(-1)
         attention_mask = data.batch['attention_mask']
         response_mask = attention_mask[:, -response_length:]
+        token_level_rewards = data.batch['token_level_rewards']
         #assert "multi_turn_token_level_rewards" in data.batch.keys()
         # assert "loss_mask" in data.batch.keys()
         # loss_mask = data.batch['loss_mask'][:, -response_length:]
         if "loss_mask" in data.batch.keys():
+            print(f"[DEBUG] compute_advantage: loss_mask={data.batch['loss_mask']}")
             loss_mask = data.batch['loss_mask'][:, -response_length:]
         else:
             loss_mask=data.batch['attention_mask'][:, -response_length:]
-        advantages, returns = core_algos.compute_bi_level_gae_advantage_return(token_level_rewards=data.batch['token_level_rewards'],
-                                                                        values=values,
-                                                                        loss_mask=loss_mask,
-                                                                        gamma=gamma,
-                                                                        lam=lam,
-                                                                        high_level_gamma=high_level_gamma,
-                                                                        reward_mask=data.batch['end_of_response_position_mask'][:, -response_length:])
-        
+        advantages, returns = core_algos.compute_bi_level_gae_advantage_return(
+            token_level_rewards=token_level_rewards,
+            values=values,
+            loss_mask=loss_mask,
+            gamma=gamma,
+            lam=lam,
+            high_level_gamma=high_level_gamma,
+            reward_mask=data.batch['end_of_response_position_mask'][:, -response_length:]
+        )
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     elif adv_estimator == AdvantageEstimator.TURN_WISE_GAE:
@@ -200,6 +230,7 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         # assert "loss_mask" in data.batch.keys()
         # loss_mask = data.batch['loss_mask'][:, -response_length:]
         if "loss_mask" in data.batch.keys():
+            print(f"[DEBUG] compute_advantage: loss_mask={data.batch['loss_mask']}")
             loss_mask = data.batch['loss_mask'][:, -response_length:]
         else:
             loss_mask=data.batch['attention_mask'][:, -response_length:]
@@ -221,9 +252,8 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         attention_mask = data.batch['attention_mask']
         response_mask = attention_mask[:, -response_length:]
         
-        
-        
         if "loss_mask" in data.batch.keys():
+            print(f"[DEBUG] compute_advantage: loss_mask={data.batch['loss_mask']}")
             loss_mask = data.batch['loss_mask'][:, -response_length:]
             
             # valid_token_level_rewards_positions = token_level_rewards[0].nonzero(as_tuple=True)[0]
@@ -248,9 +278,12 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         response_mask = attention_mask[:, -response_length:]
 
         if "loss_mask" in data.batch.keys():
+            print(f"[DEBUG] compute_advantage: loss_mask={data.batch['loss_mask']}")
             loss_mask = data.batch['loss_mask'][:, -response_length:]
-            advantages, returns = core_algos.compute_reinforce_plus_plus_outcome_advantage(
-                token_level_rewards=token_level_rewards, eos_mask=loss_mask, gamma=gamma
+            advantages, returns = compute_reinforce_plus_plus_outcome_advantage_with_loss_mask(
+                token_level_rewards=token_level_rewards,
+                loss_mask=loss_mask,
+                gamma=gamma
             )
         else:
             advantages, returns = core_algos.compute_reinforce_plus_plus_outcome_advantage(
@@ -1157,6 +1190,7 @@ class RayPPOTrainer(object):
                         with _timer('values', timing_raw):
                             values = self.critic_wg.compute_values(batch)
                             batch = batch.union(values)
+                        
 
                     with _timer('adv', timing_raw):
                         # compute scores. Support both model and function-based.
@@ -1166,7 +1200,6 @@ class RayPPOTrainer(object):
                             # we first compute reward model score
                             reward_tensor = self.rm_wg.compute_rm_score(batch)
                             batch = batch.union(reward_tensor)
-
                         
                         if self.config.rollout_manager.use_multi_turn_reward:
                         #VAGEN: TODO: use a new reward_fn to combine the results from reward model and rule-based multi-turn token reward.
@@ -1197,6 +1230,15 @@ class RayPPOTrainer(object):
                                                   lam=self.config.algorithm.lam,
                                                   num_repeat=self.config.actor_rollout_ref.rollout.n,
                                                   high_level_gamma=self.config.algorithm.high_level_gamma,)
+                        # ## temporarily save this batch
+                        # _curr_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                        # _pid = os.getpid()
+                        # _batch_save_fpath = os.path.join(
+                        #     "logs", self.config.trainer.experiment_name, f"step_{self.global_steps}"
+                        # )
+                        # os.makedirs(_batch_save_fpath, exist_ok=True)
+                        # _batch_save_fpath = os.path.join(_batch_save_fpath, f"{_pid}_{_curr_time}.pkl")
+                        # batch.save_to_disk(_batch_save_fpath)
 
                     # update critic
                     if self.use_critic:

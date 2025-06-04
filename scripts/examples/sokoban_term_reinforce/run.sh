@@ -1,15 +1,25 @@
 set -x
 
+. /mnt/ddn/alta02/zhouyu/.keys
 export VLLM_ATTENTION_BACKEND=XFORMERS
 export PYTHONHASHSEED=0
+unset WANDB_RUN_GROUP
+export WANDB_RUN_GROUP=sokoban_debug
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+if ! ray status &>/dev/null; then
+    ### raise error and exit
+    # e.g., scripts/examples/start_ray_head.sh
+    echo "Ray is not running. Please start ray --head first."
+    exit 1
+fi
 
 # max_trajectory_length = max_prompt_length + max_response_length
 lr=1e-6 # default: 1e-6
 use_kl_loss=True # default: False
 use_multi_turn_reward=False  # default: False
-exp_name=rfplusplus_sokoban_terminal_vision-mtreward$use_multi_turn_reward-lr$lr-kl$use_kl_loss
+exp_name=rfplusplus-wrecomputeadv_sokoban_terminal_vision-mtreward$use_multi_turn_reward-lr$lr-kl$use_kl_loss
 
 train_path=data/sokoban-terminal-vision/train.parquet
 test_path=data/sokoban-terminal-vision/test.parquet
@@ -75,3 +85,9 @@ python3 -m vagen.trainer.main_ppo \
     trainer.val_generations_to_log_to_wandb=8 \
     rollout_manager.n_trajectory=2 \
     2>&1 | tee logs/$exp_name.log
+
+
+# clean up ckpt dirs
+python scripts/model_merger_bulk.py merge \
+--backend fsdp \
+--local_dir checkpoints/dyna_rl/$exp_name

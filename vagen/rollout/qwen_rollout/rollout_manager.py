@@ -479,13 +479,11 @@ class QwenVLRolloutManager():
         loss_mask_response=loss_mask_response[0]
         end_of_response_position_mask_response=end_of_response_position_mask_response[0]
         
-    
         
         loss_mask = torch.cat([loss_mask_prompt, loss_mask_response], dim=-1)
         end_of_response_position_mask = torch.cat([end_of_response_position_mask_prompt, end_of_response_position_mask_response], dim=-1)
         input_ids = torch.cat([input_ids_prompt, input_ids_response], dim=-1)
         attention_mask = torch.cat([attention_mask_prompt, attention_mask_response], dim=-1)
-
         
         
         position_ids_prompt = compute_position_id_with_mask(attention_mask_prompt)
