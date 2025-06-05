@@ -1,15 +1,16 @@
+import json
+
 from typing import Dict, List, Tuple, Optional, Any, Union
 from vagen.env.base.base_service import BaseService
 from vagen.env.base.base_service_config import BaseServiceConfig
 from vagen.env.utils.state_reward_text_utils import service_state_reward_wrapper
 from vagen.server.serial import serialize_observation
-
-from .env import OSWorldDebugEnv
-from .env_config import OSWorldDebugEnvConfig
+from .env import OSWorldDebugEnv, OSWorldDebugEnvConfig
+from .service_config import OSWorldDebugServiceConfig
 
 
 class OSWorldDebugService(BaseService):
-    def __init__(self, config: BaseServiceConfig):
+    def __init__(self, config: OSWorldDebugServiceConfig):
         self.environments = {}
         self.env_configs = {}
         self.config = config
@@ -19,7 +20,9 @@ class OSWorldDebugService(BaseService):
     def create_environments_batch(self, ids2configs: Dict[Any, Any]) -> None:
         print(f"[DEBUG] OSWorldDebugService create_environments_batch {ids2configs=}")
         for env_id, config in ids2configs.items():
-            env_config_dict = config.get('env_config', {})
+            env_config_dict = config['env_config']
+            if "config_str" in env_config_dict:
+                env_config_dict = json.loads(env_config_dict["config_str"])
             env_config = OSWorldDebugEnvConfig(**env_config_dict)
             env = OSWorldDebugEnv(env_config)
             self.environments[env_id] = env

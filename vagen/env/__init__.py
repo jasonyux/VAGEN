@@ -2,6 +2,7 @@
 from .sokoban import SokobanEnv, SokobanEnvConfig, SokobanService, SokobanServiceConfig
 from .frozenlake import FrozenLakeEnv, FrozenLakeEnvConfig, FrozenLakeService, FrozenLakeServiceConfig
 from .sokoban_terminal import SokobanTerminalEnv, SokobanTerminalEnvConfig, SokobanTerminalService, SokobanTerminalServiceConfig
+from .osworld_debug import OSWorldDebugEnv, OSWorldDebugEnvConfig, OSWorldDebugService, OSWorldDebugServiceConfig
 
 
 REGISTERED_ENV = {
@@ -23,6 +24,12 @@ REGISTERED_ENV = {
         "config_cls": SokobanTerminalEnvConfig,
         "service_cls": SokobanTerminalService,
         "service_config_cls": SokobanTerminalServiceConfig
+    },
+    "osworld-debug": {
+        "env_cls": OSWorldDebugEnv,
+        "config_cls": OSWorldDebugEnvConfig,
+        "service_cls": OSWorldDebugService,
+        "service_config_cls": OSWorldDebugServiceConfig
     }
 }
 

@@ -8,6 +8,7 @@ from transformers import PreTrainedTokenizer, ProcessorMixin
 from dataclasses import dataclass, field
 import PIL
 import re
+import json
 
 from verl import DataProto
 from verl.utils.model import compute_position_id_with_mask
@@ -185,6 +186,8 @@ class QwenVLRolloutManager():
         - For env with same config and env_name, reuse the same environment (reset)
         - For env with different config or env_name, close the old environment and create a new one
         - Reset the recorder
+
+        TODO: should always create new environment instance to avoid state interference
         
         Args:
             env_configs: List of environment configurations containing env_name, config, and seed
@@ -202,8 +205,7 @@ class QwenVLRolloutManager():
             self.envs = {}
             
         for env_id, env in self.envs.items():
-            env_config_id = env.config.config_id()
-            bucket_key = env_config_id
+            bucket_key = env.config.config_id()
             env_buckets[bucket_key].add(env_id)
         
         for i, cfg in enumerate(env_configs):
@@ -213,9 +215,10 @@ class QwenVLRolloutManager():
             seed = cfg["seed"]
             
             # Create bucket key
+            if "config_str" in env_config:
+                env_config = json.loads(env_config["config_str"])
             config_instance= REGISTERED_ENV[env_name]["config_cls"](**env_config)
-            env_config_id = config_instance.config_id()
-            bucket_key = env_config_id
+            bucket_key = config_instance.config_id()
             
             # Check if we have an available environment with the same config
             if bucket_key in env_buckets and env_buckets[bucket_key]:

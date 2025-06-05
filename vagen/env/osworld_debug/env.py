@@ -1,3 +1,4 @@
+import copy
 import logging
 import datetime
 import jsonlines
@@ -8,7 +9,7 @@ import lzma
 import json
 from dataclasses import asdict
 from .env_utils import (
-    ObsPostProcessor, from_api_safe_obs,
+    ObsPostProcessor, from_api_safe_obs, encoded_img_to_pil_img,
     parse_actions_from_string, parse_code_from_string, parse_code_from_som_string
 )
 from .render_utils import render_train_trajectory_to_html
@@ -34,15 +35,20 @@ class OSWorldDebugEnv(BaseEnv):
             a11y_tree_max_tokens=config.a11y_tree_max_tokens,
         )
         print('OSWorldDebugEnv got env_id:', self._env_id)
+        os.makedirs(config.tmp_save_path, exist_ok=True)
 
         ### load prerendered trajectories
         with lzma.open(config.prerender_trajectory_fpath, 'rb') as fread:
-            fake_obs_per_instruction = pickle.load(fread)
+            self.fake_obs_per_instruction = pickle.load(fread)
         task_config = config.task_config
-        instruction = task_config['instruction']
-        self._random_traj = fake_obs_per_instruction[instruction]
-        self._last_obs = self._random_traj[-1]
+        self.instruction = task_config['instruction']
+        self._reset_env()
         
+        ### init other helper env states
+        self._prev_processed_obs = {}
+        self._prev_processed_obs_for_logging = {}
+        self._last_obs = self._random_traj[-1]
+        self._last_action = ""
         
         self._is_infeasible = False
         if "evaluator" in task_config:
@@ -50,6 +56,11 @@ class OSWorldDebugEnv(BaseEnv):
                 if task_config["evaluator"]["func"] == "infeasible":
                     self._is_infeasible = True
         
+        self._obs_processor_for_logging = ObsPostProcessor(
+            observation_type="a11y_tree",
+            platform=config.platform,
+            a11y_tree_max_tokens=config.a11y_tree_max_tokens,
+        ) 
         self._is_last_step_terminal = False
         self._ncalls = 0
         self._nsteps = 0  # this will be maintained externally since step does not take in response str
@@ -58,36 +69,45 @@ class OSWorldDebugEnv(BaseEnv):
         self._trajectory = []
         return
     
+    def _reset_env(self):
+        self._random_traj = copy.deepcopy(self.fake_obs_per_instruction[self.instruction])
+        return
+    
     def reset(self, seed=None):
         print(f'resetting env {self._env_id=}')
+        self._reset_env()
         encoded_obs, _, _, _ = self._random_traj.pop(0)
         obs = from_api_safe_obs(encoded_obs)
         
         processed_obs = self.obs_postprocesser(obs)
+        processed_obs_for_logging = self._obs_processor_for_logging(obs)
+        self._prev_processed_obs = processed_obs
+        self._prev_processed_obs_for_logging = processed_obs_for_logging
+        
+        ### logging
         instruction = self.config.task_config['instruction']
         self._chat_hist = [
-            {"role": "user", "content": instruction + "\n" + processed_obs['accessibility_tree']}
+            {"role": "user", "content": instruction + "\n" + processed_obs_for_logging['accessibility_tree']}
         ]
         self.__log_chat(self._chat_hist)
-        
-        self._trajectory = [
-            {"obs": obs, "info": None, "reward": 0.0, "done": False},  # raw data
-        ]
-        self.__log_trajectory(self._trajectory)
-
+        # self._trajectory = [
+        #     {"obs": obs, "info": None, "reward": 0.0, "done": False},  # raw data
+        # ]
+        # self.__log_trajectory(self._trajectory)
         
         ## return obs
+        img_placeholder= self.config.get("image_placeholder", "<image>")
         obs = {
-            'obs_str': obs['accessibility_tree'],
+            'obs_str': f"Given the screenshot as below. What's the next step that you will do to help with the task?\n{img_placeholder}",
             'multi_modal_data': {
-                'screenshot': obs['screenshot'],
+                img_placeholder: [encoded_img_to_pil_img(processed_obs['screenshot'])],
             },
         }
         info = {}
         return obs, info
     
     def _evaluate(self) -> float:
-        last_action = self._trajectory[-2]["action"]
+        last_action = self._last_action
         print(f'evaluating env {self._env_id=} at {self._nsteps=} with {last_action=}')
         score = 0.0
         #### semi real env logic
@@ -186,56 +206,73 @@ class OSWorldDebugEnv(BaseEnv):
     
     @env_state_reward_wrapper
     def step(self, action_str: str):
-        if len(self._random_traj) == 0:
-            encoded_obs, reward, done, info = self._last_obs
-        else:
-            encoded_obs, reward, done, info = self._random_traj.pop(0)
-
         done = False  # always set to False so this can theoretically run forever, unless model said "DONE" or "FAIL"
         parsed_actions = self.parse_actions(action_str)
-        action = parsed_actions[0]  # for simplicity, we only support one action per response
-        if action.strip() in ["DONE", "FAIL"]:
-            done = True
-            reward = self._evaluate()
-        
+        if len(parsed_actions) == 0:
+            ## bad
+            reward = -0.5
+            action = "None"
+            processed_obs = self._prev_processed_obs
+            processed_obs_for_logging = self._prev_processed_obs_for_logging
+            action_is_effective = False
+        else:
+            if len(self._random_traj) == 0:
+                encoded_obs, _, reward, done = self._last_obs
+            else:
+                encoded_obs, _, reward, done = self._random_traj.pop(0)
+            action = parsed_actions[0]  # for simplicity, we only support one action per response
+            if action.strip() in ["DONE", "FAIL"]:
+                done = True
+                reward = self._evaluate()
+            reward = float(reward)
+            
+            obs = from_api_safe_obs(encoded_obs)
+            processed_obs = self.obs_postprocesser(obs)
+            processed_obs_for_logging = self._obs_processor_for_logging(obs)
+            action_is_effective = self._prev_processed_obs_for_logging['accessibility_tree'] != processed_obs_for_logging['accessibility_tree']
+            self._prev_processed_obs_for_logging = processed_obs_for_logging
         self._is_last_step_terminal = done
-        
-        ## debugging
-        obs = from_api_safe_obs(encoded_obs)
-        processed_obs = self.obs_postprocesser(obs)
+        self._last_action = action
+
+        ## logging
         self._chat_hist.append({"role": "assistant", "raw_resp": action_str, "content": action})
-        self._chat_hist.append({"role": "user", "content": processed_obs['accessibility_tree']})
+        self._chat_hist.append({"role": "user", "content": processed_obs_for_logging['accessibility_tree']})
         self.__log_chat(self._chat_hist)
         
-        self._trajectory.append(
-            {"raw_action": action_str, "action": action, "step_idx": self._nsteps}
-        )
-        self._trajectory.append(
-            {"obs": obs, "info": info, "reward": reward, "done": done}
-        )
-        self.__log_trajectory(self._trajectory)
+        # self._trajectory.append(
+        #     {"raw_action": action_str, "action": action, "step_idx": self._nsteps}
+        # )
+        # self._trajectory.append(
+        #     {"obs": obs, "info": info, "reward": reward, "done": done}
+        # )
+        # self.__log_trajectory(self._trajectory)
         self._nsteps += 1
         
         ### return
         info = {
             "metrics": {
-                'success': False,
-                'action_is_effective': False,
-                'action_is_valid': len(parsed_actions) > 0,
+                "turn_metrics": {
+                    'action_is_effective': action_is_effective,
+                    'action_is_valid': len(parsed_actions) > 0,
+                },
+                "traj_metrics": {
+                    'success': reward == 1.0,
+                }
             },
             "llm_raw_response": action_str,
-            "llm_response": parsed_actions[0],
+            "llm_response": action,
         }
+        img_placeholder= self.config.get("image_placeholder", "<image>")
         obs = {
-            'obs_str': obs['accessibility_tree'],
+            'obs_str': f"Given the screenshot as below. What's the next step that you will do to help with the task?\n{img_placeholder}",
             'multi_modal_data': {
-                'screenshot': obs['screenshot'],
+                img_placeholder: [encoded_img_to_pil_img(processed_obs['screenshot'])],
             },
         }
         return obs, reward, done, info
 
     def system_prompt(self):
-        return "You are a helpful assistant."
+        return self.config.get_system_prompt()
     
     def close(self):
         print(f'closing env {self._env_id=}')

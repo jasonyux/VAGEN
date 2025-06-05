@@ -190,6 +190,8 @@ trainer:
   default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name}
   val_before_train: True
   val_only: False
+  # debugging use
+  save_batch_per_step: -1 # -1 for no saving, 1 for saving every step, etc
 
 rollout_manager:
   max_trajectory_length: ${data.max_trajectory_length}

@@ -153,10 +153,10 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         if "loss_mask" in data.batch.keys():
             print(f"[DEBUG] compute_advantage: loss_mask={data.batch['loss_mask']}")
             loss_mask = data.batch['loss_mask'][:, -response_length:]
-            advantages, returns = core_algos.compute_gae_advantage_return(
+            advantages, returns = core_algos.compute_gae_advantage_return_with_loss_mask(
                 token_level_rewards=token_level_rewards,
                 values=values,
-                eos_mask=loss_mask,
+                loss_mask=loss_mask,
                 gamma=gamma,
                 lam=lam
             )
@@ -178,20 +178,20 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         response_mask = attention_mask[:, -response_length:]
         token_level_rewards = data.batch['token_level_rewards']
         gae_mask = data.batch['gae_mask'][:, -response_length:]
-        # print(f"[DEBUG] compute_advantage using compute_gae_advantage_return_with_loss_mask")
-        # advantages, returns =core_algos.compute_gae_advantage_return_with_loss_mask(token_level_rewards=token_level_rewards,
-        #                                                         values=values,
-        #                                                         loss_mask=gae_mask,
-        #                                                         gamma=gamma,
-        #                                                         lam=lam)
-        print(f"[DEBUG] compute_advantage using compute_gae_advantage_return")
-        advantages, returns = core_algos.compute_gae_advantage_return(
-            token_level_rewards=token_level_rewards,
-            values=values,
-            eos_mask=gae_mask,
-            gamma=gamma,
-            lam=lam
-        )
+        print(f"[DEBUG] compute_advantage using compute_gae_advantage_return_with_loss_mask")
+        advantages, returns =core_algos.compute_gae_advantage_return_with_loss_mask(token_level_rewards=token_level_rewards,
+                                                                values=values,
+                                                                loss_mask=gae_mask,
+                                                                gamma=gamma,
+                                                                lam=lam)
+        # print(f"[DEBUG] compute_advantage using compute_gae_advantage_return")
+        # advantages, returns = core_algos.compute_gae_advantage_return(
+        #     token_level_rewards=token_level_rewards,
+        #     values=values,
+        #     eos_mask=gae_mask,
+        #     gamma=gamma,
+        #     lam=lam
+        # )
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     elif adv_estimator == AdvantageEstimator.BI_LEVEL_GAE:
@@ -1153,8 +1153,10 @@ class RayPPOTrainer(object):
                     )
                 
                 # We control vanilla-grpo sampling param here (start from init state s0, sample n_trajectory)
+                print(f"[DEBUG] step {self.global_steps} rollout starts with {len(batch)} envs")
                 batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],dtype=object)
                 batch = batch.repeat(repeat_times=self.config.rollout_manager.n_trajectory, interleave=True)
+                print(f"[DEBUG] batch repeated to {len(batch)} envs")
 
                 with _timer('step', timing_raw):
                     # generate a batch
@@ -1231,14 +1233,16 @@ class RayPPOTrainer(object):
                                                   num_repeat=self.config.actor_rollout_ref.rollout.n,
                                                   high_level_gamma=self.config.algorithm.high_level_gamma,)
                         # ## temporarily save this batch
-                        # _curr_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                        # _pid = os.getpid()
-                        # _batch_save_fpath = os.path.join(
-                        #     "logs", self.config.trainer.experiment_name, f"step_{self.global_steps}"
-                        # )
-                        # os.makedirs(_batch_save_fpath, exist_ok=True)
-                        # _batch_save_fpath = os.path.join(_batch_save_fpath, f"{_pid}_{_curr_time}.pkl")
-                        # batch.save_to_disk(_batch_save_fpath)
+                        if self.config.trainer.save_batch_per_step > 0 and \
+                            self.global_steps % self.config.trainer.save_batch_per_step == 0:
+                            _curr_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                            _pid = os.getpid()
+                            _batch_save_fpath = os.path.join(
+                                "logs", self.config.trainer.experiment_name, f"step_{self.global_steps}"
+                            )
+                            os.makedirs(_batch_save_fpath, exist_ok=True)
+                            _batch_save_fpath = os.path.join(_batch_save_fpath, f"{_pid}_{_curr_time}.pkl")
+                            batch.save_to_disk(_batch_save_fpath)
 
                     # update critic
                     if self.use_critic:
