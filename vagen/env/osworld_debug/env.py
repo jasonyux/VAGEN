@@ -34,6 +34,7 @@ class OSWorldDebugEnv(BaseEnv):
             platform=config.platform,
             a11y_tree_max_tokens=config.a11y_tree_max_tokens,
         )
+        self.fail_reward = 0.0
         print('OSWorldDebugEnv got env_id:', self._env_id)
         os.makedirs(config.tmp_save_path, exist_ok=True)
 
@@ -120,7 +121,7 @@ class OSWorldDebugEnv(BaseEnv):
             # and success IFF we termianted
             if self._is_last_step_terminal and last_action == "DONE":
                 if len(self._random_traj) != 0:
-                    score = -1.0  # fail
+                    score = self.fail_reward  # fail
                 else:
                     score = 1.0
         
@@ -133,10 +134,10 @@ class OSWorldDebugEnv(BaseEnv):
         if score == 0.0:
             # bad if max_steps reached and task is still not done
             if self._nsteps >= self.config.max_steps:
-                score = -1.0
+                score = self.fail_reward
             # or if its a terminal step but is incorrect
             if self._is_last_step_terminal:
-                score = -1.0
+                score = self.fail_reward
         #### end of normal env reward logic
         
         if self.config.always_zero_reward:
@@ -217,12 +218,14 @@ class OSWorldDebugEnv(BaseEnv):
             action_is_effective = False
         else:
             if len(self._random_traj) == 0:
-                encoded_obs, _, reward, done = self._last_obs
+                encoded_obs, _, reward, _ = self._last_obs
             else:
-                encoded_obs, _, reward, done = self._random_traj.pop(0)
-            action = parsed_actions[0]  # for simplicity, we only support one action per response
-            if action.strip() in ["DONE", "FAIL"]:
+                encoded_obs, _, reward, _ = self._random_traj.pop(0)
+            action = parsed_actions[0].strip()  # for simplicity, we only support one action per response
+            if action in ["DONE", "FAIL"]:
                 done = True
+                self._last_action = action
+                self._is_last_step_terminal = done
                 reward = self._evaluate()
             reward = float(reward)
             
@@ -260,7 +263,7 @@ class OSWorldDebugEnv(BaseEnv):
                 }
             },
             "llm_raw_response": action_str,
-            "llm_response": action,
+            "parsed_action": action,
         }
         img_placeholder= self.config.get("image_placeholder", "<image>")
         obs = {
