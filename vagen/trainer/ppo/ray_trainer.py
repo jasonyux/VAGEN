@@ -737,7 +737,8 @@ class RayPPOTrainer(object):
             samples = list(zip(inputs, outputs, scores, images))
             has_images = True
             # Find maximum number of images in any sample
-            max_images_per_sample = max(len(img_list) if isinstance(img_list, (list, tuple)) else 1 for img_list in images)
+            # max_images_per_sample = max(len(img_list) if isinstance(img_list, (list, tuple)) else 1 for img_list in images)
+            max_images_per_sample = self.config.rollout_manager.max_turns + 1  # +1 for the init state image
 
         samples.sort(key=lambda x: x[0])  # Sort by input text
 
@@ -1161,7 +1162,8 @@ class RayPPOTrainer(object):
                 with _timer('step', timing_raw):
                     # generate a batch
                     with _timer('gen', timing_raw):
-                        mini_batch_size=self.config.rollout_manager.get('mini_batch_size',len(batch))
+                        # mini_batch_size=self.config.rollout_manager.get('mini_batch_size',len(batch))
+                        mini_batch_size=self.config.rollout_manager.mini_batch_size
                         final_gen_batch_output, rst=self._process_in_mini_batches(batch, rollout_manager, mini_batch_size) 
                         train_metrics=self.log_rst_to_metrics_dict(rst=rst,mode='train')
                         metrics.update(train_metrics)

@@ -19,14 +19,15 @@ fi
 model_name=Qwen/Qwen2.5-VL-3B-Instruct
 vllm_gpu_memory_utilization=0.4  # default: 0.4
 vllm_tensor_model_parallel_size=4  # default: 2
-rollout_max_len=16384  # 4096 for one image
+max_rollout_len=14336  # 2691 for one image
+max_trajectory_length=14336  #  1920*1080 is 2691 tokens. so 4ximage is 10764 tokens
+max_response_length=512
+max_prompt_length=$((max_trajectory_length-max_response_length-32))
+max_turns=10
 
 lr=1e-6 # default: 1e-6
 use_kl_loss=True # default: False
 use_multi_turn_reward=False  # default: False
-max_trajectory_length=12480  # 1920*1080 is 2691 tokens. so 4ximage is 10764 tokens
-max_response_length=512
-max_prompt_length=$((max_trajectory_length-max_response_length-10))
 bsz=16
 param_offload=False  # default: False
 optimizer_offload=True  # default: False
@@ -38,10 +39,7 @@ test_path=data/osworld-debug/test.parquet
 
 rm -f logs/$exp_name.log
 
-# yes | ray job submit --address="http://0.0.0.0:8265" \
-#     --runtime-env '{"env_vars": {"WANDB_RUN_GROUP": "'$WANDB_RUN_GROUP'", "VLLM_ATTENTION_BACKEND": "XFORMERS", "PYTHONHASHSEED": "0"}}' \
-#     -- python -m vagen.trainer.main_ppo \
-python3 -m vagen.trainer.main_ppo \
+python -m vagen.trainer.main_ppo \
     algorithm.adv_estimator=reinforce_plus_plus \
     algorithm.high_level_gamma=0.95 \
     data.train_files=$train_path \
@@ -72,8 +70,8 @@ python3 -m vagen.trainer.main_ppo \
     actor_rollout_ref.rollout.enable_chunked_prefill=False \
     actor_rollout_ref.rollout.enforce_eager=True \
     actor_rollout_ref.rollout.free_cache_engine=True \
-    actor_rollout_ref.rollout.max_model_len=$rollout_max_len \
-    actor_rollout_ref.rollout.max_num_batched_tokens=$rollout_max_len \
+    actor_rollout_ref.rollout.max_model_len=$max_rollout_len \
+    actor_rollout_ref.rollout.max_num_batched_tokens=$max_rollout_len \
     actor_rollout_ref.rollout.max_num_seqs=8 \
     actor_rollout_ref.rollout.n=1 \
     actor_rollout_ref.rollout.top_p=0.95 \
@@ -99,7 +97,7 @@ python3 -m vagen.trainer.main_ppo \
     trainer.save_freq=100 \
     trainer.test_freq=20 \
     trainer.total_training_steps=300 \
-    rollout_manager.max_turns=10 \
+    rollout_manager.max_turns=$max_turns \
     rollout_manager.window_size=3 \
     rollout_manager.use_multi_turn_reward=$use_multi_turn_reward \
     rollout_manager.use_loss_mask=True \

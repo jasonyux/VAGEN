@@ -44,6 +44,7 @@ python3 -m vagen.trainer.main_ppo \
     data.train_files=$train_path \
     data.val_files=$test_path \
     data.train_batch_size=$train_batch_size \
+    data.val_batch_size=$train_batch_size \
     data.max_prompt_length=1024 \
     data.max_response_length=128 \
     data.max_trajectory_length=2048 \
@@ -93,7 +94,7 @@ python3 -m vagen.trainer.main_ppo \
     trainer.save_freq=100 \
     trainer.test_freq=20 \
     trainer.total_training_steps=500 \
-    rollout_manager.max_turns=2 \
+    rollout_manager.max_turns=3 \
     rollout_manager.window_size=5 \
     rollout_manager.use_multi_turn_reward=$use_multi_turn_reward \
     rollout_manager.use_loss_mask=True \

@@ -574,13 +574,22 @@ class QwenVLRolloutManager():
             batch.append(self._generate_input_for_rollout(self.recorder[env_id], step, window_size))
             self.batch_idx_to_env_id[batch_idx] = env_id
             batch_idx += 1
+        _unpadded_bsz = len(batch) 
         if not batch:
             return None
-        if len(batch) % self.config.n_gpus_per_node != 0:
-            # Pad the batch to make it divisible by n_gpus_per_node
-            while len(batch) % self.config.n_gpus_per_node != 0:
-                # do we need to use copy or not here?
-                batch.append(batch[-1].copy())
+        # if len(batch) % self.config.n_gpus_per_node != 0:
+            # # Pad the batch to make it divisible by n_gpus_per_node
+            # while len(batch) % self.config.n_gpus_per_node != 0:
+            #     # do we need to use copy or not here?
+            #     batch.append(batch[-1].copy())
+            # Pad until it is the same as mini_batch_size
+        assert len(batch) <= self.config.mini_batch_size, f"{len(batch)=} > {self.config.mini_batch_size=}"
+        while len(batch) < self.config.mini_batch_size:
+            batch.append(batch[-1].copy())
+        print((
+            f"[DEBUG] generate_batch_for_rollout: {step=} {window_size=} "
+            f"{len(self.envs)=} from {_unpadded_bsz=} padded to {len(batch)=}"
+        ))
         return collate_fn(batch)
     
     @torch.no_grad()
@@ -619,6 +628,9 @@ class QwenVLRolloutManager():
                     raw_prompt_ids_array[i] = raw_prompt_ids[i].tolist()
             gen_batch.non_tensor_batch['raw_prompt_ids'] = raw_prompt_ids_array
             
+            print((
+                f"[DEBUG] rollout_loop: calling generate_sequences at {step=} {len(gen_batch)=}; "
+            )) 
             output_batch = self.actor_rollout_wg.generate_sequences(gen_batch)
             
             responses_str = self.tokenizer.batch_decode(
@@ -626,6 +638,10 @@ class QwenVLRolloutManager():
                 skip_special_tokens=True
             ) # seems here will remove special token like "<|im_end|>"
             
+            ### trick: to deal with variable batch size during rollout:
+            # 1. repeat/pad batch to equal size but record 'real' batch_ids<->env_id mapping (done by generate_batch_for_rollout)
+            # 2. do generation on the padded batch (done by generate_sequences)
+            # 3. step the envs according to the 'real' batch_ids only (done by the following loop)
             for batch_idx, env_id in self.batch_idx_to_env_id.items(): 
                 obs, reward, done, info = self.envs[env_id].step(responses_str[batch_idx])
                 self.env_states[env_id]['step'] += 1

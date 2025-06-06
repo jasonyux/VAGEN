@@ -198,6 +198,7 @@ rollout_manager:
   window_size: 5
   max_turns: 5
   n_gpus_per_node: ${trainer.n_gpus_per_node}
+  mini_batch_size: ${actor_rollout_ref.actor.ppo_mini_batch_size}
   n_trajectory: 1 # >1 for grpo, please set actor_rollout_ref.rollout.n = 1 since we don't use vllm n sample parameter, set it >1 here for grpo agentic setting
   use_multi_turn_reward: True # for ablation study
   use_loss_mask: True # for ablation study
