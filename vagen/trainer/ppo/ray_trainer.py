@@ -1176,6 +1176,19 @@ class RayPPOTrainer(object):
                     # compute global_valid tokens
                     batch.meta_info['global_token_num'] = torch.sum(batch.batch['attention_mask'], dim=-1).tolist()
 
+                    # ## temporarily save this batch
+                    if self.config.trainer.save_batch_per_step > 0 and \
+                        self.global_steps % self.config.trainer.save_batch_per_step == 0:
+                        _curr_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                        _pid = os.getpid()
+                        _batch_save_fpath = os.path.join(
+                            "logs", self.config.trainer.experiment_name, f"step_{self.global_steps}"
+                        )
+                        print(f"[DEBUG] ppo trainer: saving batch to {_batch_save_fpath}")
+                        os.makedirs(_batch_save_fpath, exist_ok=True)
+                        _batch_save_fpath = os.path.join(_batch_save_fpath, f"{_pid}_{_curr_time}.pkl")
+                        batch.save_to_disk(_batch_save_fpath)
+
                     # recompute old_log_probs
                     with _timer('old_log_prob', timing_raw):
                         old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
@@ -1193,7 +1206,6 @@ class RayPPOTrainer(object):
                             values = self.critic_wg.compute_values(batch)
                             batch = batch.union(values)
                         
-
                     with _timer('adv', timing_raw):
                         # compute scores. Support both model and function-based.
                         # We first compute the scores using reward model. Then, we call reward_fn to combine
@@ -1232,17 +1244,19 @@ class RayPPOTrainer(object):
                                                   lam=self.config.algorithm.lam,
                                                   num_repeat=self.config.actor_rollout_ref.rollout.n,
                                                   high_level_gamma=self.config.algorithm.high_level_gamma,)
-                        # ## temporarily save this batch
-                        if self.config.trainer.save_batch_per_step > 0 and \
-                            self.global_steps % self.config.trainer.save_batch_per_step == 0:
-                            _curr_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                            _pid = os.getpid()
-                            _batch_save_fpath = os.path.join(
-                                "logs", self.config.trainer.experiment_name, f"step_{self.global_steps}"
-                            )
-                            os.makedirs(_batch_save_fpath, exist_ok=True)
-                            _batch_save_fpath = os.path.join(_batch_save_fpath, f"{_pid}_{_curr_time}.pkl")
-                            batch.save_to_disk(_batch_save_fpath)
+                    
+                    # ## temporarily save this batch
+                    if self.config.trainer.save_batch_per_step > 0 and \
+                        self.global_steps % self.config.trainer.save_batch_per_step == 0:
+                        _curr_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                        _pid = os.getpid()
+                        _batch_save_fpath = os.path.join(
+                            "logs", self.config.trainer.experiment_name, f"step_{self.global_steps}"
+                        )
+                        os.makedirs(_batch_save_fpath, exist_ok=True)
+                        _batch_save_fpath = os.path.join(_batch_save_fpath, f"{_pid}_{_curr_time}.pkl")
+                        batch.save_to_disk(_batch_save_fpath)
+                        print(f"[DEBUG] ppo trainer: saved batch to {_batch_save_fpath}")
 
                     # update critic
                     if self.use_critic:

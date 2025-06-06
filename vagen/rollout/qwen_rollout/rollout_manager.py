@@ -87,9 +87,12 @@ class QwenVLRolloutManager():
 
             prompt_template = prompt_template.replace('<|placeholder|>',
                                                         self.processor.image_token)
-            # print(f"[DEBUG] number of image_data in final trajectory: {len(image_data)}")
-            # number_of_image_tokens=prompt_template.count(self.processor.image_token)
-            # print(f"[DEBUG] number_of_image_tokens: {number_of_image_tokens}")
+            image_sizes = [image.size for image in image_data]
+            number_of_image_tokens=prompt_template.count(self.processor.image_token)
+            print((
+                f"[DEBUG] _handle_multi_modal_data: {image_sizes=}, {number_of_image_tokens=}"
+                f"{image_grid_thw=} from {len(image_data)} images"
+            ))
         return prompt_template, row_dict, image_grid_thw, raw_prompt
     
     @torch.no_grad()
@@ -352,7 +355,7 @@ class QwenVLRolloutManager():
             f'{self.tokenizer.eos_token}{self.config.special_token_for_loss_mask[1]}')
         
         print((
-            f"[DEBUG] _single_recording_to_prompt: {env_id=} {step=} {is_final=} {rewards=}; "
+            f"[DEBUG] _single_recording_to_prompt: {env_id=} {step=} {window_size=} {is_final=} {rewards=}; "
             f"has {len(image_data)} images."
         ))
         return {
@@ -387,13 +390,22 @@ class QwenVLRolloutManager():
         """
         rst=self._single_recording_to_prompt(recording, step, window_size, is_final=False, prep_for_loss_mask=False)
         prompt_with_chat_template=rst['prompt']
-        image_data=rst['image_data']        
-        has_images = len(image_data) > 0        
+        image_data=rst['image_data']
+        has_images = len(image_data) > 0
 
         row_dict = {}
         if has_images:  # expand image token
-            prompt_with_chat_template, row_dict, _, raw_prompt = self._handle_multi_modal_data(
-                prompt_with_chat_template, row_dict, image_data, do_embedding=False)
+            (
+                prompt_with_chat_template,
+                row_dict,
+                _,
+                raw_prompt
+            ) = self._handle_multi_modal_data(
+                prompt_with_chat_template, 
+                row_dict, 
+                image_data, 
+                do_embedding=False
+            )
         else:
             raw_prompt = prompt_with_chat_template
 
@@ -412,7 +424,7 @@ class QwenVLRolloutManager():
 
 
     @torch.no_grad()
-    def _generate_input_for_uptate(
+    def _generate_input_for_update(
             self, 
             recording: List[Dict], 
             step: int, 
@@ -436,14 +448,13 @@ class QwenVLRolloutManager():
                 - rest postion_ids: refer to vllm_rollout_spmd.py to check how to compute
 
         """
-
-
-
         # handle prompt, prompt=pad_token since we now have everything in response and compute a loss mask for them
         prompt_with_chat_template=self.tokenizer.pad_token 
         
         # handle response
-        response_rst=self._single_recording_to_prompt(recording, step, window_size, is_final=True, prep_for_loss_mask=True)
+        response_rst=self._single_recording_to_prompt(
+            recording, step, window_size, is_final=True, prep_for_loss_mask=True
+        )
         response_with_chat_template=response_rst['prompt']
         image_data=response_rst['image_data']
         rewards=response_rst['rewards']
@@ -451,8 +462,19 @@ class QwenVLRolloutManager():
         has_images = len(image_data) > 0
         row_dict = {}
         if has_images:  # expand image token
-            response_with_chat_template, row_dict, image_grid_thw, _ = self._handle_multi_modal_data(
-                response_with_chat_template, row_dict, image_data, do_embedding=True)
+            # response_with_chat_template, row_dict, image_grid_thw, _ = self._handle_multi_modal_data(
+            #     response_with_chat_template, row_dict, image_data, do_embedding=True)
+            (
+                response_with_chat_template,
+                row_dict,
+                image_grid_thw,
+                _
+            ) = self._handle_multi_modal_data(
+                response_with_chat_template,
+                row_dict,
+                image_data,
+                do_embedding=True
+            )
 
         
         input_ids_response, attention_mask_response = verl_F.tokenize_and_postprocess_data(prompt=response_with_chat_template,
@@ -626,14 +648,16 @@ class QwenVLRolloutManager():
         """
         batch_list = []
         for env_id in self.envs.keys():
-            row_dict = self._generate_input_for_uptate(
-                recording=self.recorder[env_id],
-                step=self.env_states[env_id]['step'],
-                window_size=None,
+            row_dict = self._generate_input_for_update(
+                recording = self.recorder[env_id],
+                step = self.env_states[env_id]['step'],
+                window_size = self.config.window_size,
             )
             step_reward_sum= row_dict['step_reward_sum']
             last_reward=self.envs[env_id].compute_reward()
-            row_dict['reward_model'] = {"style": "given", "ground_truth": {"reward": last_reward+step_reward_sum}}
+            row_dict['reward_model'] = {
+                "style": "given", "ground_truth": {"reward": last_reward+step_reward_sum}
+            }
             print(f"[DEBUG] generate_input_for_update: {env_id=} {last_reward=}, {step_reward_sum=}")
             if self.config.use_multi_turn_reward:
                 end_of_response_position_mask = row_dict['end_of_response_position_mask']
@@ -664,7 +688,9 @@ class QwenVLRolloutManager():
         for env_id, record in self.recorder.items():
             config_id = self.envs[env_id].config.config_id()
             step= self.env_states[env_id]['step']
-            output_rst = self._single_recording_to_prompt(record, self.env_states[env_id]['step'], window_size=None, is_final=False)
+            output_rst = self._single_recording_to_prompt(
+                record, self.env_states[env_id]['step'], window_size=None, is_final=False
+            )
             image= output_rst['image_data']
             done = self.env_states[env_id]['done']
             # score = self.envs[env_id].compute_reward()+sum(output_rst['rewards'])

@@ -34,13 +34,20 @@ class OSWorldDebugEnvConfig(BaseEnvConfig):
             "a11y_tree_max_tokens",
             "max_steps",
             "always_zero_reward",
-            "task_config",
         ]
-        id_str = ",".join([
+        config_id_data = []
+        task_config = self.task_config
+        domain = task_config['snapshot']
+        task_id = task_config['id']
+        config_id_data.append(f"domain={domain}")
+        config_id_data.append(f"task_id={task_id}")
+        config_id_data.extend([
             f"{field.name}={getattr(self, field.name)}" for field in fields(self) if field.name in id_fields
         ])
-        uuid_str = str(uuid.uuid4())
-        return f"OSWorldDebugEnvConfig({id_str})({uuid_str})"
+        id_str = ",".join(config_id_data)
+        return f"OSWorldDebugEnvConfig({id_str})"
+        # # uuid_str = str(uuid.uuid4())
+        # return f"OSWorldDebugEnvConfig({id_str})({uuid_str})"
     
     def get_system_prompt(self):
         if self.system_prompt_type == "default":

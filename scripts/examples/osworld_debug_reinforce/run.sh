@@ -3,7 +3,6 @@ set -x
 . /mnt/ddn/alta02/zhouyu/.keys
 export VLLM_ATTENTION_BACKEND=XFORMERS
 export PYTHONHASHSEED=0
-unset WANDB_RUN_GROUP
 export WANDB_RUN_GROUP=osworld_debug
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -16,13 +15,22 @@ if ! ray status &>/dev/null; then
 fi
 
 # max_trajectory_length = max_prompt_length + max_response_length
+
+model_name=Qwen/Qwen2.5-VL-3B-Instruct
+vllm_gpu_memory_utilization=0.4  # default: 0.4
+vllm_tensor_model_parallel_size=4  # default: 2
+rollout_max_len=16384  # 4096 for one image
+
 lr=1e-6 # default: 1e-6
 use_kl_loss=True # default: False
 use_multi_turn_reward=False  # default: False
-max_trajectory_length=16384
+max_trajectory_length=12480  # 1920*1080 is 2691 tokens. so 4ximage is 10764 tokens
 max_response_length=512
 max_prompt_length=$((max_trajectory_length-max_response_length-10))
 bsz=16
+param_offload=False  # default: False
+optimizer_offload=True  # default: False
+
 exp_name=rfplusplus-osworld_debug-mtreward$use_multi_turn_reward-lr$lr-kl$use_kl_loss
 
 train_path=data/osworld-debug/train.parquet
@@ -30,6 +38,9 @@ test_path=data/osworld-debug/test.parquet
 
 rm -f logs/$exp_name.log
 
+# yes | ray job submit --address="http://0.0.0.0:8265" \
+#     --runtime-env '{"env_vars": {"WANDB_RUN_GROUP": "'$WANDB_RUN_GROUP'", "VLLM_ATTENTION_BACKEND": "XFORMERS", "PYTHONHASHSEED": "0"}}' \
+#     -- python -m vagen.trainer.main_ppo \
 python3 -m vagen.trainer.main_ppo \
     algorithm.adv_estimator=reinforce_plus_plus \
     algorithm.high_level_gamma=0.95 \
@@ -42,7 +53,7 @@ python3 -m vagen.trainer.main_ppo \
     data.max_trajectory_length=$max_trajectory_length \
     data.image_key=images \
     data.truncation=left \
-    actor_rollout_ref.model.path=Qwen/Qwen2.5-VL-3B-Instruct \
+    actor_rollout_ref.model.path=$model_name \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.actor.optim.lr=${lr} \
@@ -50,27 +61,30 @@ python3 -m vagen.trainer.main_ppo \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.actor.use_kl_loss=${use_kl_loss} \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
-    actor_rollout_ref.actor.kl_loss_type=mse \
+    actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     actor_rollout_ref.actor.grad_clip=1.0 \
-    actor_rollout_ref.actor.fsdp_config.param_offload=False \
-    actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
+    actor_rollout_ref.actor.fsdp_config.param_offload=$param_offload \
+    actor_rollout_ref.actor.fsdp_config.optimizer_offload=$optimizer_offload \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
-    actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=$vllm_tensor_model_parallel_size \
     actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=$vllm_gpu_memory_utilization \
     actor_rollout_ref.rollout.enable_chunked_prefill=False \
     actor_rollout_ref.rollout.enforce_eager=True \
     actor_rollout_ref.rollout.free_cache_engine=True \
-    actor_rollout_ref.rollout.max_num_batched_tokens=$max_trajectory_length \
+    actor_rollout_ref.rollout.max_model_len=$rollout_max_len \
+    actor_rollout_ref.rollout.max_num_batched_tokens=$rollout_max_len \
+    actor_rollout_ref.rollout.max_num_seqs=8 \
     actor_rollout_ref.rollout.n=1 \
     actor_rollout_ref.rollout.top_p=0.95 \
     actor_rollout_ref.rollout.temperature=1.0 \
+    actor_rollout_ref.rollout.dtype=bfloat16 \
     actor_rollout_ref.rollout.disable_log_stats=False \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     critic.optim.lr=1e-5 \
     critic.model.use_remove_padding=True \
-    critic.model.path=Qwen/Qwen2.5-VL-3B-Instruct \
+    critic.model.path=$model_name \
     critic.model.enable_gradient_checkpointing=True \
     critic.ppo_micro_batch_size_per_gpu=1 \
     critic.model.fsdp_config.param_offload=False \
@@ -91,7 +105,7 @@ python3 -m vagen.trainer.main_ppo \
     rollout_manager.use_loss_mask=True \
     trainer.val_before_train=True \
     trainer.val_generations_to_log_to_wandb=4 \
-    rollout_manager.n_trajectory=2 \
+    rollout_manager.n_trajectory=1 \
     trainer.save_batch_per_step=1 \
     2>&1 | tee logs/$exp_name.log
 

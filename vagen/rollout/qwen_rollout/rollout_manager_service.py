@@ -357,6 +357,7 @@ class QwenVLRolloutManagerService():
         
         print((
             f"[DEBUG] _single_recording_to_prompt: {env_id=} {step=} {is_final=} {rewards=}; "
+            f"{window_size=}"
             f"has {len(image_data)} images."
         ))
         return {
@@ -389,10 +390,12 @@ class QwenVLRolloutManagerService():
                 - position_ids for prompts: rope
                 - rest postion_ids: refer to vllm_rollout_spmd.py to check how to compute
         """
-        rst=self._single_recording_to_prompt(recording, step, window_size, is_final=False, prep_for_loss_mask=False)
-        prompt_with_chat_template=rst['prompt']
-        image_data=rst['image_data']        
-        has_images = len(image_data) > 0        
+        rst = self._single_recording_to_prompt(
+            recording, step, window_size, is_final=False, prep_for_loss_mask=False
+        )
+        prompt_with_chat_template = rst['prompt']
+        image_data = rst['image_data']
+        has_images = len(image_data) > 0
 
         row_dict = {}
         if has_images:  # expand image token
@@ -416,7 +419,7 @@ class QwenVLRolloutManagerService():
 
 
     @torch.no_grad()
-    def _generate_input_for_uptate(
+    def _generate_input_for_update(
             self, 
             recording: List[Dict], 
             step: int, 
@@ -640,14 +643,16 @@ class QwenVLRolloutManagerService():
         batch_list = []
         reward_rst=self.env_client.compute_reward_batch(list(self.envs.keys()))
         for env_id in self.envs.keys():
-            row_dict = self._generate_input_for_uptate(
-                recording=self.recorder[env_id],
-                step=self.env_states[env_id]['step'],
-                window_size=None,
+            row_dict = self._generate_input_for_update(
+                recording = self.recorder[env_id],
+                step = self.env_states[env_id]['step'],
+                window_size = self.config.window_size,
             )
             step_reward_sum= row_dict['step_reward_sum']
     
-            row_dict['reward_model'] = {"style": "given", "ground_truth": {"reward": reward_rst[env_id]+step_reward_sum}}
+            row_dict['reward_model'] = {
+                "style": "given", "ground_truth": {"reward": reward_rst[env_id]+step_reward_sum}
+            }
             print(f"[DEBUG] generate_batch_for_update: {env_id=} {reward_rst[env_id]=}, {step_reward_sum=}")
             if self.config.use_multi_turn_reward:
                 end_of_response_position_mask = row_dict['end_of_response_position_mask']
@@ -675,7 +680,9 @@ class QwenVLRolloutManagerService():
         for env_id, record in self.recorder.items():
             config_id = self.envs[env_id].config_id()
             step= self.env_states[env_id]['step']
-            output_rst = self._single_recording_to_prompt(record, self.env_states[env_id]['step'], window_size=None, is_final=False)
+            output_rst = self._single_recording_to_prompt(
+                record, self.env_states[env_id]['step'], window_size=None, is_final=False
+            )
             image= output_rst['image_data']
             done = self.env_states[env_id]['done']
             score = reward_rst[env_id]+ sum(output_rst['rewards'])
