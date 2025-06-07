@@ -222,16 +222,30 @@ class InferenceRolloutService(BaseRollout):
                     "content": responses[env_id]
                 })
                 
-                # Add user observation to recording if not done
+                # # Add user observation to recording if not done
+                # if not done:
+                #     user_message = {"role": "user", "content": obs["obs_str"]}
+                    
+                #     # Track multi-modal data if present
+                #     if "multi_modal_data" in obs:
+                #         user_message["multi_modal_data"] = obs["multi_modal_data"]
+                    
+                #     self.recordings[env_id].append(user_message)
+                #     next_active_envs.add(env_id)
+                user_message = {"role": "user", "content": obs["obs_str"]}
+                if "multi_modal_data" in obs:
+                    user_message["multi_modal_data"] = obs["multi_modal_data"]
+                self.recordings[env_id].append(user_message)
                 if not done:
-                    user_message = {"role": "user", "content": obs["obs_str"]}
-                    
-                    # Track multi-modal data if present
-                    if "multi_modal_data" in obs:
-                        user_message["multi_modal_data"] = obs["multi_modal_data"]
-                    
-                    self.recordings[env_id].append(user_message)
                     next_active_envs.add(env_id)
+                # user_message = {"role": "user", "content": obs["obs_str"]}
+                # if "multi_modal_data" in obs:
+                #     user_message["multi_modal_data"] = obs["multi_modal_data"]
+                # self.recordings[env_id].append(user_message)
+                # if not done:
+                #     next_active_envs.add(env_id)
+                # else:
+                #     break
             
             # Update active environments for next iteration
             active_envs = next_active_envs
@@ -349,6 +363,10 @@ class InferenceRolloutService(BaseRollout):
             
             # Get completion status
             done = self.env_states[env_id]["done"]
+            print((
+                f"[DEBUG] recording_to_log: {env_id=} {done=} {step_count=} {len(self.recordings[env_id])=}; "
+                f"{len(image_data)=}; last_role={role}"
+            ))
             
             # ======= Key Modifications =======
             # Accumulate rewards from each step

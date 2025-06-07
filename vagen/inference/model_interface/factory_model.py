@@ -49,7 +49,7 @@ class ModelFactory:
             supported_models = provider_info.get("supported_models", [])
         
         # Validate model name before initialization
-        if model_name and supported_models and model_name not in supported_models:
+        if provider != "vllm" and model_name and supported_models and model_name not in supported_models:
             raise ValueError(
                 f"Invalid model '{model_name}' for provider '{provider}'. "
                 f"Supported models: {supported_models}"

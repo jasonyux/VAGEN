@@ -18,9 +18,16 @@ fi
 
 # max_trajectory_length = max_prompt_length + max_response_length
 # exp_name="aico_sokoban_terminal_vision"
+max_turns=3
+window_size=5
+
 use_loss_mask=True
 use_gae_mask=True
-exp_name="ppo_sokoban_terminal_vision-use_loss_mask$use_loss_mask-use_gae_mask$use_gae_mask"
+train_bsz=64
+n_repeats=1
+
+# exp_name="ppo_sokoban_terminal_vision-use_loss_mask$use_loss_mask-use_gae_mask$use_gae_mask"
+exp_name="ppo_sokoban_terminal_vision-newreset-use_loss_mask$use_loss_mask-use_gae_mask$use_gae_mask-run2"
 train_path=data/sokoban-terminal-vision/train.parquet
 test_path=data/sokoban-terminal-vision/test.parquet
 
@@ -31,7 +38,8 @@ python -m vagen.trainer.main_ppo \
     algorithm.high_level_gamma=0.95 \
     data.train_files=$train_path \
     data.val_files=$test_path \
-    data.train_batch_size=64 \
+    data.train_batch_size=$train_bsz \
+    data.val_batch_size=$train_bsz \
     data.max_prompt_length=1024 \
     data.max_response_length=128 \
     data.max_trajectory_length=2048 \
@@ -40,7 +48,7 @@ python -m vagen.trainer.main_ppo \
     actor_rollout_ref.model.path=Qwen/Qwen2.5-VL-3B-Instruct \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
-    actor_rollout_ref.actor.ppo_mini_batch_size=32 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=$train_bsz \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.actor.use_kl_loss=False \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
@@ -56,10 +64,10 @@ python -m vagen.trainer.main_ppo \
     actor_rollout_ref.rollout.enforce_eager=True \
     actor_rollout_ref.rollout.free_cache_engine=True \
     actor_rollout_ref.rollout.n=1 \
-    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
-    actor_rollout_ref.ref.fsdp_config.param_offload=True \
     actor_rollout_ref.rollout.top_p=0.95 \
     actor_rollout_ref.rollout.temperature=0.7 \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.ref.fsdp_config.param_offload=True \
     critic.optim.lr=1e-5 \
     critic.model.use_remove_padding=True \
     critic.model.path=Qwen/Qwen2.5-VL-3B-Instruct \
@@ -77,14 +85,14 @@ python -m vagen.trainer.main_ppo \
     trainer.save_freq=100 \
     trainer.test_freq=20 \
     trainer.total_training_steps=200 \
-    rollout_manager.max_turns=3 \
-    rollout_manager.window_size=5 \
+    rollout_manager.max_turns=$max_turns \
+    rollout_manager.window_size=$window_size \
     rollout_manager.use_multi_turn_reward=False \
     rollout_manager.use_loss_mask=$use_loss_mask \
     rollout_manager.use_gae_mask=$use_gae_mask \
     trainer.val_before_train=True \
     trainer.val_generations_to_log_to_wandb=8 \
-    rollout_manager.n_trajectory=2 \
+    rollout_manager.n_trajectory=$n_repeats \
     2>&1 | tee logs/$exp_name.log
 
 
