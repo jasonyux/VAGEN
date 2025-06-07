@@ -718,13 +718,14 @@ class RayPPOTrainer(object):
         outputs=[]
         scores=[]
         images=[]
+        llm_actions=[]
         
         for item in log_rst:
             inputs.append(item['config_id'])
             outputs.append(item['output_str'])
             scores.append(item['metrics']['score'])
             images.append(item['image_data'])
-        
+            llm_actions.append(str(item['llm_actions']))
         
         
         # Handle the case where images might not be provided
@@ -734,12 +735,13 @@ class RayPPOTrainer(object):
             max_images_per_sample = 0
         else:
             # Here, images is expected to be a list of lists, where each inner list contains images for one sample
-            samples = list(zip(inputs, outputs, scores, images))
+            samples = list(zip(inputs, outputs, scores, images, llm_actions))
             has_images = True
             # Find maximum number of images in any sample
             # max_images_per_sample = max(len(img_list) if isinstance(img_list, (list, tuple)) else 1 for img_list in images)
             max_images_per_sample = self.config.rollout_manager.max_turns + 1  # +1 for the init state image
 
+        print(f"[DEBUG] maybe_log_val_generations_to_wandb: {max_images_per_sample=}, {self.config.rollout_manager.max_turns=}")
         samples.sort(key=lambda x: x[0])  # Sort by input text
 
         # Use fixed random seed for deterministic shuffling
@@ -753,10 +755,10 @@ class RayPPOTrainer(object):
         if has_images:
             columns = ["step"]
             for i in range(len(samples)):
-                columns.extend([f"input_{i+1}", f"output_{i+1}", f"score_{i+1}"])
+                columns.extend([f"input_{i+1}", f"output_{i+1}", f"score_{i+1}", f"llm_action_{i+1}"])
                 columns.extend([f"image_{i+1}_{j+1}" for j in range(max_images_per_sample)])
         else:
-            columns = ["step"] + sum([[f"input_{i+1}", f"output_{i+1}", f"score_{i+1}"] for i in range(len(samples))], [])
+            columns = ["step"] + sum([[f"input_{i+1}", f"output_{i+1}", f"score_{i+1}", f"llm_action_{i+1}"] for i in range(len(samples))], [])
 
         if not hasattr(self, 'validation_table'):
             # Initialize the table on first call
@@ -771,8 +773,8 @@ class RayPPOTrainer(object):
         
         for sample in samples:
             if has_images:
-                input_text, output_text, score, sample_images = sample
-                row_data.extend([input_text, output_text, score])
+                input_text, output_text, score, sample_images, llm_action = sample
+                row_data.extend([input_text, output_text, score, llm_action])
                 
                 # Handle if sample_images is a single image or list of images
                 if not isinstance(sample_images, (list, tuple)):

@@ -40,7 +40,7 @@ class OSWorldDebugEnvConfig(BaseEnvConfig):
         domain = task_config['snapshot']
         task_id = task_config['id']
         config_id_data.append(f"domain={domain}")
-        config_id_data.append(f"task_id={task_id}")
+        # config_id_data.append(f"task_id={task_id}")
         config_id_data.extend([
             f"{field.name}={getattr(self, field.name)}" for field in fields(self) if field.name in id_fields
         ])

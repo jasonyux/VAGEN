@@ -14,7 +14,6 @@ from verl import DataProto
 from verl.utils.model import compute_position_id_with_mask
 import verl.utils.torch_functional as verl_F
 from verl.utils.dataset.rl_dataset import process_image, collate_fn
-import vagen.env
 from vagen.env import REGISTERED_ENV
 
     
@@ -33,6 +32,7 @@ class QwenVLRolloutManager():
         self.envs = None # dict env_id:EnvInterface
         self.env_states = None # dict
         self.batch_idx_to_env_id = None # dict
+        return
 
     @torch.no_grad()
     def _handle_special_tokens(self, llm_raw_response: str, prep_for_loss_mask: bool) -> str:
@@ -182,15 +182,100 @@ class QwenVLRolloutManager():
         
         return new_input_ids, new_attention_mask, new_loss_mask, new_end_of_response_position_mask
     
+    # @torch.no_grad()
+    # def reset(self, env_configs):
+    #     """
+    #     Reset environments based on provided configurations, reusing environments when possible.
+    #     - For env with same config and env_name, reuse the same environment (reset)
+    #     - For env with different config or env_name, close the old environment and create a new one
+    #     - Reset the recorder
+
+    #     TODO: should always create new environment instance to avoid state interference
+        
+    #     Args:
+    #         env_configs: List of environment configurations containing env_name, config, and seed
+        
+    #     Returns:
+    #         Initial observations and info from all environments
+    #     """
+    #     # Step 1: Sort environments into buckets by env_name and config
+    #     # Try to reuse environemnts with the same config and env_name
+        
+    #     env_buckets = defaultdict(set)
+    #     new_envs = {}
+        
+    #     if self.envs is None:
+    #         self.envs = {}
+            
+    #     for env_id, env in self.envs.items():
+    #         bucket_key = env.config.config_id()
+    #         env_buckets[bucket_key].add(env_id)
+        
+    #     for i, cfg in enumerate(env_configs):
+    #         env_id = i
+    #         env_name = cfg["env_name"]
+    #         env_config = cfg["env_config"]
+    #         seed = cfg["seed"]
+            
+    #         # Create bucket key
+    #         if "config_str" in env_config:
+    #             env_config = json.loads(env_config["config_str"])
+    #         config_instance= REGISTERED_ENV[env_name]["config_cls"](**env_config)
+    #         bucket_key = config_instance.config_id()
+            
+    #         # Check if we have an available environment with the same config
+    #         if bucket_key in env_buckets and env_buckets[bucket_key]:
+    #             old_env_id = env_buckets[bucket_key].pop()
+    #             new_envs[env_id] = {
+    #                 "env_instance":self.envs[old_env_id],
+    #                 "seed":seed,
+    #             }
+    #         else:
+    #             # don't initialize the environment here, close unused environments first
+    #             new_envs[env_id] = {
+    #                 "env_cls":REGISTERED_ENV[env_name]["env_cls"],
+    #                 "seed":seed,
+    #                 "config_instance":config_instance,
+    #             }
+        
+    #     # Close unused environments
+    #     for bucket_key, env_ids in env_buckets.items():
+    #         for env_id in env_ids:
+    #             self.envs[env_id].close()
+    #             del self.envs[env_id]
+        
+    #     # Step 2: Reset environments and collect observations/info
+    #     if self.recorder is not None:
+    #         del self.recorder
+    #     self.recorder = defaultdict(list)
+    #     initial_obs = {}
+    #     initial_info = {}
+    #     for env_id, env_info in new_envs.items():
+    #         if "env_instance" in env_info:
+    #             self.envs[env_id] = env_info["env_instance"]
+    #         else:
+    #             assert "env_cls" in env_info
+    #             self.envs[env_id] = env_info["env_cls"](env_info["config_instance"])
+    #         obs, info = self.envs[env_id].reset(env_info["seed"])
+    #         initial_obs[env_id] = obs
+    #         initial_info[env_id] = info
+    #         self.record(
+    #             env_id, 
+    #             obs=obs, 
+    #             reward=0, 
+    #             done=False, 
+    #             info=info
+    #         )
+    #     self.env_states = {env_id: {'step': 0, 'done': False,'metrics':{"turn_metrics":defaultdict(list),"traj_metrics":{}}} for env_id in self.envs}
+    #     return initial_obs, initial_info
+
     @torch.no_grad()
     def reset(self, env_configs):
         """
-        Reset environments based on provided configurations, reusing environments when possible.
-        - For env with same config and env_name, reuse the same environment (reset)
-        - For env with different config or env_name, close the old environment and create a new one
-        - Reset the recorder
-
-        TODO: should always create new environment instance to avoid state interference
+        Reset environments based on provided configurations. To avoid interference between environments, we always create new environment instance.
+        1. close unused environments
+        2. create new environments
+        3. reset the recorder
         
         Args:
             env_configs: List of environment configurations containing env_name, config, and seed
@@ -198,19 +283,18 @@ class QwenVLRolloutManager():
         Returns:
             Initial observations and info from all environments
         """
-        # Step 1: Sort environments into buckets by env_name and config
-        # Try to reuse environemnts with the same config and env_name
-        
-        env_buckets = defaultdict(set)
-        new_envs = {}
-        
         if self.envs is None:
             self.envs = {}
-            
+    
+        ## 1. close old environments
+        _env_ids_to_delete = set()
         for env_id, env in self.envs.items():
-            bucket_key = env.config.config_id()
-            env_buckets[bucket_key].add(env_id)
+            env.close()
+            _env_ids_to_delete.add(env_id)
+        for env_id in _env_ids_to_delete:
+            del self.envs[env_id]
         
+        new_envs = {}
         for i, cfg in enumerate(env_configs):
             env_id = i
             env_name = cfg["env_name"]
@@ -221,56 +305,41 @@ class QwenVLRolloutManager():
             if "config_str" in env_config:
                 env_config = json.loads(env_config["config_str"])
             config_instance= REGISTERED_ENV[env_name]["config_cls"](**env_config)
-            bucket_key = config_instance.config_id()
-            
-            # Check if we have an available environment with the same config
-            if bucket_key in env_buckets and env_buckets[bucket_key]:
-                old_env_id = env_buckets[bucket_key].pop()
-                new_envs[env_id] = {
-                    "env_instance":self.envs[old_env_id],
-                    "seed":seed,
-                }
-            else:
-                # don't initialize the environment here, close unused environments first
-                new_envs[env_id] = {
-                    "env_cls":REGISTERED_ENV[env_name]["env_cls"],
-                    "seed":seed,
-                    "config_instance":config_instance,
-                }
+            new_envs[env_id] = {
+                "env_cls":REGISTERED_ENV[env_name]["env_cls"],
+                "seed":seed,
+                "config_instance":config_instance,
+            }
         
-        # Close unused environments
-        for bucket_key, env_ids in env_buckets.items():
-            for env_id in env_ids:
-                self.envs[env_id].close()
-                del self.envs[env_id]
-
-        
-        # Step 2: Reset environments and collect observations/info
-        
+        # Step 2: create environments and obtain obs and info
         if self.recorder is not None:
             del self.recorder
+        
         self.recorder = defaultdict(list)
         initial_obs = {}
         initial_info = {}
         for env_id, env_info in new_envs.items():
-            if "env_instance" in env_info:
-                self.envs[env_id] = env_info["env_instance"]
-            else:
-                assert "env_cls" in env_info
-                self.envs[env_id] = env_info["env_cls"](env_info["config_instance"])
+            assert "env_cls" in env_info
+            self.envs[env_id] = env_info["env_cls"](env_info["config_instance"])
             obs, info = self.envs[env_id].reset(env_info["seed"])
             initial_obs[env_id] = obs
             initial_info[env_id] = info
             self.record(
-                env_id, 
-                obs=obs, 
-                reward=0, 
-                done=False, 
+                env_id,
+                obs=obs,
+                reward=0.0,
+                done=False,
                 info=info
             )
         
-        self.env_states = {env_id: {'step': 0, 'done': False,'metrics':{"turn_metrics":defaultdict(list),"traj_metrics":{}}} for env_id in self.envs}
-        
+        self.env_states = {
+            env_id: {
+                'step': 0,
+                'done': False,
+                'metrics':{"turn_metrics":defaultdict(list),"traj_metrics":{}}
+            }
+            for env_id in self.envs
+        }
         return initial_obs, initial_info
     
     @torch.no_grad()
@@ -333,26 +402,34 @@ class QwenVLRolloutManager():
         chat.append({"role": "system", "content": self.envs[env_id].system_prompt()})
 
         image_data=[]
+        llm_actions = []
         for i, record in enumerate(history):
-            if i>0:
+            if i > 0:
                 llm_raw_response = record['info']['llm_raw_response']
-                filtered_llm_raw_response = self._handle_special_tokens(llm_raw_response, prep_for_loss_mask=prep_for_loss_mask)
+                llm_action = record['info'].get('parsed_action', None)
+                filtered_llm_raw_response = self._handle_special_tokens(
+                    llm_raw_response, prep_for_loss_mask=prep_for_loss_mask
+                )
                 chat.append({"role": "assistant", "content": filtered_llm_raw_response})
                 rewards.append(record['reward'])
-            if i<len(history)-1 or not is_final:
+                llm_actions.append(llm_action)
+            if i < len(history) - 1 or not is_final:
                 chat.append({"role": "user", "content": record['obs_str']})
                 if 'image_data' in record:
                     for img in record['image_data']:
                         image_data.append(img)
             
-        prompt_with_chat_template = self.tokenizer.apply_chat_template(chat, add_generation_prompt=(not is_final), tokenize=False)
+        prompt_with_chat_template = self.tokenizer.apply_chat_template(
+            chat, add_generation_prompt=(not is_final), tokenize=False
+        )
         if is_final: # NOTE hard coded
             assert prompt_with_chat_template[-1] == '\n', f"The last token should be new line token, got {prompt_with_chat_template[-1]}"
             prompt_with_chat_template = prompt_with_chat_template[:-1] # remove the last in token
         # switch box_end and im_end so that the model can learn to generate <|im_end|>
         prompt_with_chat_template = prompt_with_chat_template.replace(
             f'{self.config.special_token_for_loss_mask[1]}{self.tokenizer.eos_token}',
-            f'{self.tokenizer.eos_token}{self.config.special_token_for_loss_mask[1]}')
+            f'{self.tokenizer.eos_token}{self.config.special_token_for_loss_mask[1]}'
+        )
         
         print((
             f"[DEBUG] _single_recording_to_prompt: {env_id=} {step=} {window_size=} {is_final=} {rewards=}; "
@@ -360,6 +437,7 @@ class QwenVLRolloutManager():
         ))
         return {
             "prompt": prompt_with_chat_template,
+            "llm_actions": llm_actions,
             "image_data": image_data,
             "rewards": rewards,
         }
@@ -708,6 +786,7 @@ class QwenVLRolloutManager():
                 record, self.env_states[env_id]['step'], window_size=None, is_final=False
             )
             image= output_rst['image_data']
+            llm_actions = output_rst['llm_actions']
             done = self.env_states[env_id]['done']
             # score = self.envs[env_id].compute_reward()+sum(output_rst['rewards'])
             _terminal_reward = self.envs[env_id].compute_reward()
@@ -716,6 +795,7 @@ class QwenVLRolloutManager():
             print((
                 f"[DEBUG] recording_to_log: {env_id=} {step=} {done=} {output_rst['rewards']=} {_terminal_reward=} {score=}; "
                 f"chat with {len(output_rst['image_data'])} images; "
+                f"llm_actions: {llm_actions}; "
                 f"raw_chat: {output_rst['prompt']}"
             ))
             
@@ -735,9 +815,8 @@ class QwenVLRolloutManager():
                 "env_id": env_id,
                 "config_id": config_id,
                 "output_str": output_rst['prompt'],
+                "llm_actions": llm_actions,
                 "image_data": image,
                 "metrics": metrics,
             })
         return env_info
-            
-            
