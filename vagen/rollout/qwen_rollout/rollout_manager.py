@@ -287,12 +287,9 @@ class QwenVLRolloutManager():
             self.envs = {}
     
         ## 1. close old environments
-        _env_ids_to_delete = set()
         for env_id, env in self.envs.items():
             env.close()
-            _env_ids_to_delete.add(env_id)
-        for env_id in _env_ids_to_delete:
-            del self.envs[env_id]
+        self.envs = {}
         
         new_envs = {}
         for i, cfg in enumerate(env_configs):
@@ -555,22 +552,28 @@ class QwenVLRolloutManager():
             )
 
         
-        input_ids_response, attention_mask_response = verl_F.tokenize_and_postprocess_data(prompt=response_with_chat_template,
-                                                                         tokenizer=self.tokenizer,
-                                                                         max_length=self.config.max_trajectory_length-1, # -1 for the prompt padding token
-                                                                         pad_token_id=self.tokenizer.pad_token_id,
-                                                                         left_pad=False,
-                                                                         truncation=self.config.truncation)
-        input_ids_prompt, attention_mask_prompt = verl_F.tokenize_and_postprocess_data(prompt=prompt_with_chat_template,
-                                                                         tokenizer=self.tokenizer,
-                                                                         max_length=1,
-                                                                         pad_token_id=self.tokenizer.pad_token_id,
-                                                                         left_pad=True,
-                                                                         truncation=self.config.truncation)
+        input_ids_response, attention_mask_response = verl_F.tokenize_and_postprocess_data(
+            prompt=response_with_chat_template,
+            tokenizer=self.tokenizer,
+            max_length=self.config.max_trajectory_length-1, # -1 for the prompt padding token
+            pad_token_id=self.tokenizer.pad_token_id,
+            left_pad=False,
+            truncation=self.config.truncation
+        )
+        input_ids_prompt, attention_mask_prompt = verl_F.tokenize_and_postprocess_data(
+            prompt=prompt_with_chat_template,
+            tokenizer=self.tokenizer,
+            max_length=1,
+            pad_token_id=self.tokenizer.pad_token_id,
+            left_pad=True,
+            truncation=self.config.truncation
+        )
         attention_mask_prompt=torch.zeros_like(input_ids_prompt) # All prompt will be masked
         
         
-        input_ids_response, attention_mask_response, loss_mask_response,end_of_response_position_mask_response = self._compute_loss_mask(input_ids_response, attention_mask_response)
+        input_ids_response, attention_mask_response, loss_mask_response,end_of_response_position_mask_response = self._compute_loss_mask(
+            input_ids_response, attention_mask_response
+        )
         
         input_ids_prompt=input_ids_prompt[0]
         attention_mask_prompt=attention_mask_prompt[0]
@@ -660,7 +663,7 @@ class QwenVLRolloutManager():
             # while len(batch) % self.config.n_gpus_per_node != 0:
             #     # do we need to use copy or not here?
             #     batch.append(batch[-1].copy())
-            # Pad until it is the same as mini_batch_size
+        # Pad until it is the same as mini_batch_size
         assert len(batch) <= self.config.mini_batch_size, f"{len(batch)=} > {self.config.mini_batch_size=}"
         while len(batch) < self.config.mini_batch_size:
             batch.append(batch[-1].copy())
@@ -746,6 +749,7 @@ class QwenVLRolloutManager():
                 recording = self.recorder[env_id],
                 step = self.env_states[env_id]['step'],
                 window_size = self.config.window_size,
+                # window_size = None,
             )
             step_reward_sum= row_dict['step_reward_sum']
             last_reward=self.envs[env_id].compute_reward()
