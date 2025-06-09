@@ -1,6 +1,7 @@
 
 from typing import List, Union, Optional, Dict
 import copy
+import math
 from collections import defaultdict
 import torch
 import numpy as np
@@ -441,6 +442,105 @@ class QwenVLRolloutManager():
         }
     
     @torch.no_grad()
+    def _single_recording_to_windowed_prompts(self,
+            recording: List[Dict], 
+            step: int, 
+            window_size: int = None,
+            prep_for_loss_mask: bool = False,
+        ):
+        """
+        Given a recording, generate the prompt for MLLM
+        Chat: Sys -> |InitUser| -> |Assistant, User| -> |Assistant, User| -> ... -> |Assistant, User Final|
+
+        Args:
+            recording: List of dictionaries containing recorded environment interactions
+            step: Current step to generate prompt for
+            window_size: Number of past steps to include in the context
+            is_final: Whether the prompt is for the final step 
+                - if True, the end of the chat is from the last assistant's response
+            prep_for_loss_mask: whether to use special token to wrap llm response
+            
+        Returns:
+            dict: prompt_with_chat_template : str, image_data: list of images, reward: list of reward
+        """
+        
+        assert step >= 0
+        start_step = 0
+        end_step = min(step, window_size)
+        n_windows = math.ceil(step/window_size)
+        
+        trainable_outputs = []
+        for i in range(n_windows):
+            start_step = i * window_size
+            end_step = min(step, start_step + window_size)
+        
+            assert len(recording) >= end_step + 1, 'History length is not enough'
+            history = recording[start_step: end_step + 1]
+            rewards=[]
+            chat = []
+            
+            env_id = history[0]['env_id']
+            chat.append({"role": "system", "content": self.envs[env_id].system_prompt()})
+
+            image_data=[]
+            llm_actions = []
+            # each record stores (a, s')
+            ## first append s_0
+            if start_step == 0:
+                s_0 = history[0]
+                history = history[1:]
+            else:
+                s_0 = recording[start_step - 1]
+            chat.append({"role": "user", "content": s_0['obs_str']})
+            if 'image_data' in s_0:
+                for img in s_0['image_data']:
+                    image_data.append(img)
+            ## next append a_1, s_1
+            for j, record in enumerate(history):
+                llm_raw_response = record['info']['llm_raw_response']
+                llm_action = record['info'].get('parsed_action', None)
+                filtered_llm_raw_response = self._handle_special_tokens(
+                    llm_raw_response, prep_for_loss_mask=prep_for_loss_mask
+                )
+                chat.append({"role": "assistant", "content": filtered_llm_raw_response})
+                rewards.append(record['reward'])
+                llm_actions.append(llm_action)
+                # add next state IFF not the last step
+                if j != len(history) - 1:
+                    chat.append({"role": "user", "content": record['obs_str']})
+                    if 'image_data' in record:
+                        for img in record['image_data']:
+                            image_data.append(img)
+            assert chat[-1]['role'] == 'assistant', f"The last role should be assistant, got {chat[-1]['role']}"
+                
+            prompt_with_chat_template = self.tokenizer.apply_chat_template(
+                chat, add_generation_prompt=False, tokenize=False
+            )
+            assert prompt_with_chat_template[-1] == '\n', f"The last token should be new line token, got {prompt_with_chat_template[-1]}"
+            prompt_with_chat_template = prompt_with_chat_template[:-1] # remove the last in token
+            # switch box_end and im_end so that the model can learn to generate <|im_end|>
+            prompt_with_chat_template = prompt_with_chat_template.replace(
+                f'{self.config.special_token_for_loss_mask[1]}{self.tokenizer.eos_token}',
+                f'{self.tokenizer.eos_token}{self.config.special_token_for_loss_mask[1]}'
+            )
+            
+            print((
+                f"[DEBUG] _single_recording_to_windowed_prompts: {env_id=} {step=} window={i}/{n_windows} {window_size=} {rewards=}; "
+                f"has {len(image_data)} images."
+            ))
+            trainable_outputs.append({
+                "prompt": prompt_with_chat_template,
+                "llm_actions": llm_actions,
+                "image_data": image_data,
+                "rewards": rewards,
+            })
+        print((
+            f"[DEBUG] _single_recording_to_windowed_prompts output {len(trainable_outputs)} samples for "
+            f"{env_id=} {step=} {window_size=}."
+        ))
+        return trainable_outputs
+
+    @torch.no_grad()
     def _generate_input_for_rollout(
             self, 
             recording: List[Dict], 
@@ -495,9 +595,135 @@ class QwenVLRolloutManager():
         # add index for each prompt
         index = row_dict.get("extra_info", {}).get("index", 0)
         row_dict["index"] = index
-
         return row_dict
 
+    # @torch.no_grad()
+    # def _generate_input_for_update(
+    #         self, 
+    #         recording: List[Dict], 
+    #         step: int, 
+    #         window_size: int = None,
+    #     ):
+    #     """
+    #     Given a recording, generate the final input for MLLM
+        
+    #     Args:
+    #         recording: List of dictionaries containing recorded environment interactions
+    #         step: Current step to generate input for
+    #         window_size: Number of past steps to include in the context
+        
+    #     Returns:
+    #         Dictionary containing properly formatted inputs for the MLLM
+    #         - prompts: task instruction
+    #         - responses: responses generated from prompts
+    #         - input_ids, attention_mask, position_ids: prompts and responses generated from prompts
+    #         - position_ids: 
+    #             - position_ids for prompts: rope
+    #             - rest postion_ids: refer to vllm_rollout_spmd.py to check how to compute
+
+    #     """
+    #     # handle prompt, prompt=pad_token since we now have everything in response and compute a loss mask for them
+    #     prompt_with_chat_template=self.tokenizer.pad_token 
+        
+    #     # handle response
+    #     response_rst=self._single_recording_to_prompt(
+    #         recording, step, window_size, is_final=True, prep_for_loss_mask=True
+    #     )
+    #     response_with_chat_template=response_rst['prompt']
+    #     image_data=response_rst['image_data']
+    #     rewards=response_rst['rewards']
+       
+    #     has_images = len(image_data) > 0
+    #     row_dict = {}
+    #     if has_images:  # expand image token
+    #         # response_with_chat_template, row_dict, image_grid_thw, _ = self._handle_multi_modal_data(
+    #         #     response_with_chat_template, row_dict, image_data, do_embedding=True)
+    #         (
+    #             response_with_chat_template,
+    #             row_dict,
+    #             image_grid_thw,
+    #             _
+    #         ) = self._handle_multi_modal_data(
+    #             response_with_chat_template,
+    #             row_dict,
+    #             image_data,
+    #             do_embedding=True
+    #         )
+
+        
+    #     input_ids_response, attention_mask_response = verl_F.tokenize_and_postprocess_data(
+    #         prompt=response_with_chat_template,
+    #         tokenizer=self.tokenizer,
+    #         max_length=self.config.max_trajectory_length-1, # -1 for the prompt padding token
+    #         pad_token_id=self.tokenizer.pad_token_id,
+    #         left_pad=False,
+    #         truncation=self.config.truncation
+    #     )
+    #     input_ids_prompt, attention_mask_prompt = verl_F.tokenize_and_postprocess_data(
+    #         prompt=prompt_with_chat_template,
+    #         tokenizer=self.tokenizer,
+    #         max_length=1,
+    #         pad_token_id=self.tokenizer.pad_token_id,
+    #         left_pad=True,
+    #         truncation=self.config.truncation
+    #     )
+    #     attention_mask_prompt=torch.zeros_like(input_ids_prompt) # All prompt will be masked
+        
+        
+    #     input_ids_response, attention_mask_response, loss_mask_response,end_of_response_position_mask_response = self._compute_loss_mask(
+    #         input_ids_response, attention_mask_response
+    #     )
+        
+    #     input_ids_prompt=input_ids_prompt[0]
+    #     attention_mask_prompt=attention_mask_prompt[0]
+    #     loss_mask_prompt = torch.zeros_like(attention_mask_prompt)
+    #     end_of_response_position_mask_prompt = torch.zeros_like(attention_mask_prompt)
+        
+    #     input_ids_response=input_ids_response[0]
+    #     attention_mask_response=attention_mask_response[0]
+    #     loss_mask_response=loss_mask_response[0]
+    #     end_of_response_position_mask_response=end_of_response_position_mask_response[0]
+        
+        
+    #     loss_mask = torch.cat([loss_mask_prompt, loss_mask_response], dim=-1)
+    #     end_of_response_position_mask = torch.cat([end_of_response_position_mask_prompt, end_of_response_position_mask_response], dim=-1)
+    #     input_ids = torch.cat([input_ids_prompt, input_ids_response], dim=-1)
+    #     attention_mask = torch.cat([attention_mask_prompt, attention_mask_response], dim=-1)
+        
+        
+    #     position_ids_prompt = compute_position_id_with_mask(attention_mask_prompt)
+    #     # if self.image_key in row_dict:
+    #     if has_images:
+    #         from verl.models.transformers.qwen2_vl import get_rope_index
+    #         position_ids_response = get_rope_index(
+    #             self.processor,
+    #             image_grid_thw=image_grid_thw,
+    #             input_ids=input_ids_response,
+    #             attention_mask=attention_mask_response,
+    #         )  # (3, seq_len)
+    #         position_ids_prompt=position_ids_prompt.view(1, -1).expand(3, -1)
+    #     else:
+    #         response_length = input_ids_response.shape[0]
+    #         delta_position_id = torch.arange(1, response_length + 1, device=position_ids_prompt.device)
+    #         position_ids_response = position_ids_prompt[-1:] + delta_position_id
+        
+    #     if self.config.use_multi_turn_reward:
+    #         raise NotImplementedError("Multi-turn reward is not supported for long trajectory")
+    #     if self.config.use_loss_mask:
+    #         row_dict['loss_mask'] = loss_mask
+    #     if self.config.use_gae_mask:
+    #         row_dict['gae_mask'] = loss_mask
+    #     row_dict["end_of_response_position_mask"] = end_of_response_position_mask # 
+    #     position_ids = torch.cat([position_ids_prompt, position_ids_response], dim=-1)
+    #     row_dict['prompts'] = input_ids_prompt
+    #     row_dict['responses'] = input_ids_response
+    #     row_dict['input_ids'] = input_ids
+    #     row_dict['attention_mask'] = attention_mask
+    #     row_dict['position_ids'] = position_ids
+    #     index = row_dict.get("extra_info", {}).get("index", 0)
+    #     row_dict["index"] = index
+    #     row_dict["step_reward_sum"] = sum(rewards)
+    #     return row_dict
 
     @torch.no_grad()
     def _generate_input_for_update(
@@ -524,114 +750,122 @@ class QwenVLRolloutManager():
                 - rest postion_ids: refer to vllm_rollout_spmd.py to check how to compute
 
         """
-        # handle prompt, prompt=pad_token since we now have everything in response and compute a loss mask for them
-        prompt_with_chat_template=self.tokenizer.pad_token 
+        assert window_size is not None, "window_size must be provided for long trajectory"
+        
         
         # handle response
-        response_rst=self._single_recording_to_prompt(
-            recording, step, window_size, is_final=True, prep_for_loss_mask=True
+        response_rsts=self._single_recording_to_windowed_prompts(
+            recording, step, window_size, prep_for_loss_mask=True
         )
-        response_with_chat_template=response_rst['prompt']
-        image_data=response_rst['image_data']
-        rewards=response_rst['rewards']
-       
-        has_images = len(image_data) > 0
-        row_dict = {}
-        if has_images:  # expand image token
-            # response_with_chat_template, row_dict, image_grid_thw, _ = self._handle_multi_modal_data(
-            #     response_with_chat_template, row_dict, image_data, do_embedding=True)
+        row_dicts = []
+        for response_rst in response_rsts:
+            # handle prompt, prompt=pad_token since we now have everything in response 
+            # and compute a loss mask for them
+            prompt_with_chat_template=self.tokenizer.pad_token 
+            response_with_chat_template=response_rst['prompt']
+            image_data=response_rst['image_data']
+            rewards=response_rst['rewards']
+        
+            has_images = len(image_data) > 0
+            row_dict = {}
+            if has_images:  # expand image token
+                # response_with_chat_template, row_dict, image_grid_thw, _ = self._handle_multi_modal_data(
+                #     response_with_chat_template, row_dict, image_data, do_embedding=True)
+                (
+                    response_with_chat_template,
+                    row_dict,
+                    image_grid_thw,
+                    _
+                ) = self._handle_multi_modal_data(
+                    response_with_chat_template,
+                    row_dict,
+                    image_data,
+                    do_embedding=True
+                )
+            
             (
-                response_with_chat_template,
-                row_dict,
-                image_grid_thw,
-                _
-            ) = self._handle_multi_modal_data(
-                response_with_chat_template,
-                row_dict,
-                image_data,
-                do_embedding=True
+                input_ids_response, attention_mask_response
+            ) = verl_F.tokenize_and_postprocess_data(
+                prompt=response_with_chat_template,
+                tokenizer=self.tokenizer,
+                max_length=self.config.max_trajectory_length-1, # -1 for the prompt padding token
+                pad_token_id=self.tokenizer.pad_token_id,
+                left_pad=False,
+                truncation=self.config.truncation
             )
-
-        
-        input_ids_response, attention_mask_response = verl_F.tokenize_and_postprocess_data(
-            prompt=response_with_chat_template,
-            tokenizer=self.tokenizer,
-            max_length=self.config.max_trajectory_length-1, # -1 for the prompt padding token
-            pad_token_id=self.tokenizer.pad_token_id,
-            left_pad=False,
-            truncation=self.config.truncation
-        )
-        input_ids_prompt, attention_mask_prompt = verl_F.tokenize_and_postprocess_data(
-            prompt=prompt_with_chat_template,
-            tokenizer=self.tokenizer,
-            max_length=1,
-            pad_token_id=self.tokenizer.pad_token_id,
-            left_pad=True,
-            truncation=self.config.truncation
-        )
-        attention_mask_prompt=torch.zeros_like(input_ids_prompt) # All prompt will be masked
-        
-        
-        input_ids_response, attention_mask_response, loss_mask_response,end_of_response_position_mask_response = self._compute_loss_mask(
-            input_ids_response, attention_mask_response
-        )
-        
-        input_ids_prompt=input_ids_prompt[0]
-        attention_mask_prompt=attention_mask_prompt[0]
-        loss_mask_prompt = torch.zeros_like(attention_mask_prompt)
-        end_of_response_position_mask_prompt = torch.zeros_like(attention_mask_prompt)
-        
-        input_ids_response=input_ids_response[0]
-        attention_mask_response=attention_mask_response[0]
-        loss_mask_response=loss_mask_response[0]
-        end_of_response_position_mask_response=end_of_response_position_mask_response[0]
-        
-        
-        loss_mask = torch.cat([loss_mask_prompt, loss_mask_response], dim=-1)
-        end_of_response_position_mask = torch.cat([end_of_response_position_mask_prompt, end_of_response_position_mask_response], dim=-1)
-        input_ids = torch.cat([input_ids_prompt, input_ids_response], dim=-1)
-        attention_mask = torch.cat([attention_mask_prompt, attention_mask_response], dim=-1)
-        
-        
-        position_ids_prompt = compute_position_id_with_mask(attention_mask_prompt)
-        # if self.image_key in row_dict:
-        if has_images:
-            from verl.models.transformers.qwen2_vl import get_rope_index
-            position_ids_response = get_rope_index(
-                self.processor,
-                image_grid_thw=image_grid_thw,
-                input_ids=input_ids_response,
-                attention_mask=attention_mask_response,
-            )  # (3, seq_len)
-            position_ids_prompt=position_ids_prompt.view(1, -1).expand(3, -1)
-        else:
-            response_length = input_ids_response.shape[0]
-            delta_position_id = torch.arange(1, response_length + 1, device=position_ids_prompt.device)
-            position_ids_response = position_ids_prompt[-1:] + delta_position_id
-        
-        if self.config.use_multi_turn_reward:
-            reward_positions = torch.nonzero(end_of_response_position_mask).squeeze(-1)
-            multi_turn_token_level_rewards = torch.zeros_like(end_of_response_position_mask, dtype=torch.float)
-            assert len(reward_positions) == len(rewards), "Number of rewards does not match number of reward positions"
-            for idx,reward in enumerate(rewards):
-                multi_turn_token_level_rewards[reward_positions[idx]] = reward
-            row_dict["multi_turn_token_level_rewards"] = multi_turn_token_level_rewards # (seq_len,) 
-            row_dict["end_of_response_position_mask"] = end_of_response_position_mask
-        if self.config.use_loss_mask:
-            row_dict['loss_mask'] = loss_mask
-        if self.config.use_gae_mask:
-            row_dict['gae_mask'] = loss_mask
-        row_dict["end_of_response_position_mask"] = end_of_response_position_mask # 
-        position_ids = torch.cat([position_ids_prompt, position_ids_response], dim=-1)
-        row_dict['prompts'] = input_ids_prompt
-        row_dict['responses'] = input_ids_response
-        row_dict['input_ids'] = input_ids
-        row_dict['attention_mask'] = attention_mask
-        row_dict['position_ids'] = position_ids
-        index = row_dict.get("extra_info", {}).get("index", 0)
-        row_dict["index"] = index
-        row_dict["step_reward_sum"] = sum(rewards)
-        return row_dict
+            # input_ids_prompt, attention_mask_prompt = verl_F.tokenize_and_postprocess_data(
+            (
+                input_ids_prompt, attention_mask_prompt
+            ) = verl_F.tokenize_and_postprocess_data(
+                prompt=prompt_with_chat_template,
+                tokenizer=self.tokenizer,
+                max_length=1,
+                pad_token_id=self.tokenizer.pad_token_id,
+                left_pad=True,
+                truncation=self.config.truncation
+            )
+            attention_mask_prompt=torch.zeros_like(input_ids_prompt) # All prompt will be masked
+            
+            # input_ids_response, attention_mask_response, loss_mask_response,end_of_response_position_mask_response = self._compute_loss_mask(
+            (
+                input_ids_response,
+                attention_mask_response,
+                loss_mask_response,
+                end_of_response_position_mask_response
+            ) = self._compute_loss_mask(
+                input_ids_response, attention_mask_response
+            )
+            
+            input_ids_prompt=input_ids_prompt[0]
+            attention_mask_prompt=attention_mask_prompt[0]
+            loss_mask_prompt = torch.zeros_like(attention_mask_prompt)
+            end_of_response_position_mask_prompt = torch.zeros_like(attention_mask_prompt)
+            
+            input_ids_response=input_ids_response[0]
+            attention_mask_response=attention_mask_response[0]
+            loss_mask_response=loss_mask_response[0]
+            end_of_response_position_mask_response=end_of_response_position_mask_response[0]
+            
+            
+            loss_mask = torch.cat([loss_mask_prompt, loss_mask_response], dim=-1)
+            end_of_response_position_mask = torch.cat([end_of_response_position_mask_prompt, end_of_response_position_mask_response], dim=-1)
+            input_ids = torch.cat([input_ids_prompt, input_ids_response], dim=-1)
+            attention_mask = torch.cat([attention_mask_prompt, attention_mask_response], dim=-1)
+            
+            position_ids_prompt = compute_position_id_with_mask(attention_mask_prompt)
+            # if self.image_key in row_dict:
+            if has_images:
+                from verl.models.transformers.qwen2_vl import get_rope_index
+                position_ids_response = get_rope_index(
+                    self.processor,
+                    image_grid_thw=image_grid_thw,
+                    input_ids=input_ids_response,
+                    attention_mask=attention_mask_response,
+                )  # (3, seq_len)
+                position_ids_prompt=position_ids_prompt.view(1, -1).expand(3, -1)
+            else:
+                response_length = input_ids_response.shape[0]
+                delta_position_id = torch.arange(1, response_length + 1, device=position_ids_prompt.device)
+                position_ids_response = position_ids_prompt[-1:] + delta_position_id
+            
+            if self.config.use_multi_turn_reward:
+                raise NotImplementedError("Multi-turn reward is not supported for long trajectory")
+            if self.config.use_loss_mask:
+                row_dict['loss_mask'] = loss_mask
+            if self.config.use_gae_mask:
+                row_dict['gae_mask'] = loss_mask
+            row_dict["end_of_response_position_mask"] = end_of_response_position_mask # 
+            position_ids = torch.cat([position_ids_prompt, position_ids_response], dim=-1)
+            row_dict['prompts'] = input_ids_prompt
+            row_dict['responses'] = input_ids_response
+            row_dict['input_ids'] = input_ids
+            row_dict['attention_mask'] = attention_mask
+            row_dict['position_ids'] = position_ids
+            index = row_dict.get("extra_info", {}).get("index", 0)
+            row_dict["index"] = index
+            row_dict["step_reward_sum"] = sum(rewards)
+            row_dicts.append(row_dict)
+        return row_dicts
 
     @torch.no_grad()
     def generate_batch_for_rollout(self, step, window_size):
@@ -745,34 +979,51 @@ class QwenVLRolloutManager():
             batch (DataProto): batch of final trajectory of all environments
         """
         batch_list = []
+        # produce num_turns//window_size trajectories
+        max_turns = self.config.max_turns
+        window_size = self.config.window_size
+        assert max_turns % window_size == 0, f"{max_turns=} % {window_size=}"
         for env_id in self.envs.keys():
-            # _window_size = self.config.window_size
-            _window_size = None
-            print(f"[DEBUG] generate_batch_for_update: {env_id=} {_window_size=} in {len(self.envs)=}")
-            row_dict = self._generate_input_for_update(
+            print(f"[DEBUG] generate_batch_for_update: {env_id=} {window_size=} in {len(self.envs)=}")
+            _env_batch_list = []
+            row_dicts = self._generate_input_for_update(
                 recording = self.recorder[env_id],
                 step = self.env_states[env_id]['step'],
-                window_size = _window_size,
-            )
-            step_reward_sum= row_dict['step_reward_sum']
+                window_size = window_size,
+            ) 
             last_reward=self.envs[env_id].compute_reward()
-            row_dict['reward_model'] = {
-                "style": "given", "ground_truth": {"reward": last_reward+step_reward_sum}
-            }
-            print(f"[DEBUG] generate_input_for_update: {env_id=} {last_reward=}, {step_reward_sum=}")
-            if self.config.use_multi_turn_reward:
-                end_of_response_position_mask = row_dict['end_of_response_position_mask']
-                reward_positions = torch.nonzero(end_of_response_position_mask).squeeze(-1)
-                last_reward_index = reward_positions[-1]
-                _multi_turn_token_level_rewards = row_dict['multi_turn_token_level_rewards']
-                row_dict['multi_turn_token_level_rewards'][last_reward_index] += last_reward
-                _new_multi_turn_token_level_rewards = row_dict['multi_turn_token_level_rewards']
-                print((
-                    f"[DEBUG] generate_input_for_update: {env_id=} BEFORE: {_multi_turn_token_level_rewards.sum(dim=-1)=}, "
-                    f"AFTER: {_new_multi_turn_token_level_rewards.sum(dim=-1)=}. "
-                    f"RAW: {_multi_turn_token_level_rewards=}, {_new_multi_turn_token_level_rewards=}"
-                ))
-            batch_list.append(row_dict)
+            step_reward_sums = [row_dict['step_reward_sum'] for row_dict in row_dicts]
+            for r_idx, row_dict in enumerate(row_dicts):
+                ### perform backprop here?
+                _reward = last_reward + sum(step_reward_sums)
+                row_dict['reward_model'] = {
+                    "style": "given", "ground_truth": {"reward": _reward}
+                }
+                print(f"[DEBUG] generate_batch_for_update: {env_id=} {r_idx=} {last_reward=}, {step_reward_sums=} {_reward=}")
+                _env_batch_list.append(row_dict)
+            print(f"[DEBUG] generate_batch_for_update: {env_id=} {len(_env_batch_list)=} samples")
+            ### check if we need padding
+            target_n_seq = math.ceil(max_turns / window_size)
+            while len(_env_batch_list) < target_n_seq:
+                _env_batch_list.append(_env_batch_list[-1].copy())
+            print(f"[DEBUG] generate_batch_for_update: {env_id=} {len(_env_batch_list)=} padded to {target_n_seq=}")
+            batch_list.extend(_env_batch_list)
+
+            # row_dict = self._generate_input_for_update(
+            #     recording = self.recorder[env_id],
+            #     step = self.env_states[env_id]['step'],
+            #     window_size = window_size,
+            # )
+            # step_reward_sum= row_dict['step_reward_sum']
+            # last_reward=self.envs[env_id].compute_reward()
+            # row_dict['reward_model'] = {
+            #     "style": "given", "ground_truth": {"reward": last_reward+step_reward_sum}
+            # }
+            # print(f"[DEBUG] generate_input_for_update: {env_id=} {last_reward=}, {step_reward_sum=}")
+            # if self.config.use_multi_turn_reward:
+            #     raise NotImplementedError("Multi-turn reward is not supported for long trajectory")
+            # batch_list.append(row_dict)
+        print(f"[DEBUG] generate_batch_for_update returning with: {len(batch_list)=}")
         batch_dict = collate_fn(batch_list)
         batch = DataProto.from_single_dict(batch_dict)
         return batch

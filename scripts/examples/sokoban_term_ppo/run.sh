@@ -19,15 +19,21 @@ fi
 # max_trajectory_length = max_prompt_length + max_response_length
 # exp_name="aico_sokoban_terminal_vision"
 max_turns=3
-window_size=5
+window_size=3
 
 use_loss_mask=True
 use_gae_mask=True
 train_bsz=64
-n_repeats=1
+rollout_bsz=128
+n_repeats=2
+N_GPUS=8
 
 # exp_name="ppo_sokoban_terminal_vision-use_loss_mask$use_loss_mask-use_gae_mask$use_gae_mask"
-exp_name="ppo_sokoban_terminal_vision-newreset-use_loss_mask$use_loss_mask-use_gae_mask$use_gae_mask-run2"
+# exp_name="ppo_sokoban_terminal_vision-newreset-use_loss_mask$use_loss_mask-use_gae_mask$use_gae_mask-run2"
+# exp_name="ppo_sokoban_terminal_vision-newreset-nonewindow-use_loss_mask$use_loss_mask-use_gae_mask$use_gae_mask-run2"
+# exp_name="ppo_sokoban_terminal_vision-newreset-2repeat-use_loss_mask$use_loss_mask-use_gae_mask$use_gae_mask-run2"
+exp_name="ppo_sokoban_terminal_vision-longtraj-use_loss_mask$use_loss_mask-use_gae_mask$use_gae_mask-run2"
+# exp_name="ppo_sokoban_terminal_vision-2642a55-use_loss_mask$use_loss_mask-use_gae_mask$use_gae_mask-run2"
 train_path=data/sokoban-terminal-vision/train.parquet
 test_path=data/sokoban-terminal-vision/test.parquet
 
@@ -39,7 +45,7 @@ python -m vagen.trainer.main_ppo \
     data.train_files=$train_path \
     data.val_files=$test_path \
     data.train_batch_size=$train_bsz \
-    data.val_batch_size=$train_bsz \
+    data.val_batch_size=$(($train_bsz * $n_repeats)) \
     data.max_prompt_length=1024 \
     data.max_response_length=128 \
     data.max_trajectory_length=2048 \
@@ -80,7 +86,7 @@ python -m vagen.trainer.main_ppo \
     trainer.logger=['console','wandb'] \
     trainer.project_name='dyna_rl' \
     trainer.experiment_name=$exp_name \
-    trainer.n_gpus_per_node=4 \
+    trainer.n_gpus_per_node=$N_GPUS \
     trainer.nnodes=1 \
     trainer.save_freq=100 \
     trainer.test_freq=20 \
@@ -90,9 +96,10 @@ python -m vagen.trainer.main_ppo \
     rollout_manager.use_multi_turn_reward=False \
     rollout_manager.use_loss_mask=$use_loss_mask \
     rollout_manager.use_gae_mask=$use_gae_mask \
+    rollout_manager.n_trajectory=$n_repeats \
+    rollout_manager.mini_batch_size=$rollout_bsz \
     trainer.val_before_train=True \
     trainer.val_generations_to_log_to_wandb=8 \
-    rollout_manager.n_trajectory=$n_repeats \
     2>&1 | tee logs/$exp_name.log
 
 

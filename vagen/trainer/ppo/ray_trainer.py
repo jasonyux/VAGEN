@@ -41,7 +41,8 @@ from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn
 from torch.utils.data import RandomSampler, SequentialSampler
 from torchdata.stateful_dataloader import StatefulDataLoader
 
-from vagen.rollout.qwen_rollout.rollout_manager import QwenVLRolloutManager
+# from vagen.rollout.qwen_rollout.rollout_manager import QwenVLRolloutManager
+from vagen.rollout.qwen_rollout.rollout_manager_longtraj import QwenVLRolloutManager
 from vagen.rollout.qwen_rollout.rollout_manager_service import QwenVLRolloutManagerService
 from vagen.trainer.ppo.core_algos import (
     compute_reinforce_plus_plus_outcome_advantage_with_loss_mask
@@ -626,6 +627,10 @@ class RayPPOTrainer(object):
             print(
                 f"WARNING: val_batch_size is deprecated. Validation datasets are sent to inference engines as a whole batch, which will schedule the memory themselves."
             )
+        assert config.rollout_manager.mini_batch_size <= config.data.train_batch_size * config.rollout_manager.n_trajectory, \
+            f"mini_batch_size {config.rollout_manager.mini_batch_size} needs to be less than {config.data.train_batch_size * config.rollout_manager.n_trajectory}."
+        assert config.rollout_manager.mini_batch_size <= config.data.val_batch_size, \
+            f"mini_batch_size {config.rollout_manager.mini_batch_size} needs to be less than {config.data.val_batch_size}."
 
         print("[validate_config] All configuration checks passed successfully!")
 
@@ -1082,11 +1087,9 @@ class RayPPOTrainer(object):
             # Store results
             all_final_gen_batch_outputs.append(mini_batch_output)
             all_rst.extend(mini_batch_rst)  # Extend the list since rst is a list
-        
        
             combined_output = DataProto.concat(all_final_gen_batch_outputs)
-       
-        
+        print(f"[DEBUG] _process_in_mini_batches: {len(combined_output)=}, {len(all_rst)=}")
         return combined_output, all_rst
     
     def fit(self):
