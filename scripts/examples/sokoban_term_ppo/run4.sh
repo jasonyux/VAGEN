@@ -3,8 +3,6 @@ set -x
 . /mnt/ddn/alta02/zhouyu/.keys
 export VLLM_ATTENTION_BACKEND=XFORMERS
 export PYTHONHASHSEED=0
-unset WANDB_RUN_GROUP
-export WANDB_RUN_GROUP=sokoban_debug
 
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -28,9 +26,7 @@ rollout_bsz=128
 n_repeats=2
 N_GPUS=4
 
-# exp_name="ppo_sokoban_terminal_vision-use_loss_mask$use_loss_mask-use_gae_mask$use_gae_mask"
-exp_name="ppo_sokoban_terminal_vision-use_loss_mask$use_loss_mask-use_gae_mask$use_gae_mask-run2"
-# exp_name="ppo_sokoban_terminal_vision-longtraj-use_loss_mask$use_loss_mask-use_gae_mask$use_gae_mask"
+exp_name="ppo_sokoban_terminal_longtraj-use_loss_mask$use_loss_mask-use_gae_mask$use_gae_mask"
 train_path=data/sokoban-terminal-vision/train.parquet
 test_path=data/sokoban-terminal-vision/test.parquet
 
@@ -85,7 +81,7 @@ python -m vagen.trainer.main_ppo \
     trainer.experiment_name=$exp_name \
     trainer.n_gpus_per_node=$N_GPUS \
     trainer.nnodes=1 \
-    trainer.save_freq=100 \
+    trainer.save_freq=200 \
     trainer.test_freq=20 \
     trainer.total_training_steps=200 \
     rollout_manager.max_turns=$max_turns \
@@ -95,7 +91,7 @@ python -m vagen.trainer.main_ppo \
     rollout_manager.use_gae_mask=$use_gae_mask \
     rollout_manager.n_trajectory=$n_repeats \
     rollout_manager.mini_batch_size=$rollout_bsz \
-    rollout_manager.manager_type=default \
+    rollout_manager.manager_type=longtraj \
     trainer.val_before_train=True \
     trainer.val_generations_to_log_to_wandb=8 \
     2>&1 | tee logs/$exp_name.log

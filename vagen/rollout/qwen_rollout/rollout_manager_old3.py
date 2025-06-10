@@ -1,7 +1,6 @@
 
 from typing import List, Union, Optional, Dict
 import copy
-import math
 from collections import defaultdict
 import torch
 import numpy as np
@@ -9,23 +8,22 @@ from transformers import PreTrainedTokenizer, ProcessorMixin
 from dataclasses import dataclass, field
 import PIL
 import re
-import json
 
 from verl import DataProto
 from verl.utils.model import compute_position_id_with_mask
 import verl.utils.torch_functional as verl_F
 from verl.utils.dataset.rl_dataset import process_image, collate_fn
+import vagen.env
 from vagen.env import REGISTERED_ENV
 
-
-class QwenVLLongTrajRolloutManager():
-    def __init__(
-        self,
-        actor_rollout_wg,
-        config,
-        tokenizer: PreTrainedTokenizer,
-        processor: Optional[ProcessorMixin] = None,
-    ):
+    
+class QwenVLRolloutManager():
+    def __init__(self,
+                 actor_rollout_wg,
+                 config,
+                 tokenizer: PreTrainedTokenizer,
+                 processor: Optional[ProcessorMixin] = None,
+                 ):
         self.tokenizer = tokenizer
         self.processor = processor
         self.config = config
@@ -34,7 +32,6 @@ class QwenVLLongTrajRolloutManager():
         self.envs = None # dict env_id:EnvInterface
         self.env_states = None # dict
         self.batch_idx_to_env_id = None # dict
-        return
 
     @torch.no_grad()
     def _handle_special_tokens(self, llm_raw_response: str, prep_for_loss_mask: bool) -> str:
@@ -54,12 +51,12 @@ class QwenVLLongTrajRolloutManager():
     
     @torch.no_grad()
     def _handle_multi_modal_data(
-        self, 
-        prompt_template: str, 
-        row_dict: Dict,
-        image_data: List[PIL.Image.Image],
-        do_embedding: bool = True,
-    ) -> str:
+            self, 
+            prompt_template: str, 
+            row_dict: Dict,
+            image_data: List[PIL.Image.Image],
+            do_embedding: bool = True,
+        ) -> str:
         """Handle multi-modal data in the prompt template
 
         - For do_embedding=False(vllm), replace <image> with <|vision_start|><|image_pad|><|vision_end|> -> raw_prompt
@@ -87,15 +84,11 @@ class QwenVLLongTrajRolloutManager():
                 )
                 index += 1
 
-            prompt_template = prompt_template.replace(
-                '<|placeholder|>', self.processor.image_token
-            )
-            image_sizes = [image.size for image in image_data]
-            number_of_image_tokens=prompt_template.count(self.processor.image_token)
-            print((
-                f"[DEBUG] _handle_multi_modal_data: {image_sizes=}, {number_of_image_tokens=}"
-                f"{image_grid_thw=} from {len(image_data)} images"
-            ))
+            prompt_template = prompt_template.replace('<|placeholder|>',
+                                                        self.processor.image_token)
+            # print(f"[DEBUG] number of image_data in final trajectory: {len(image_data)}")
+            # number_of_image_tokens=prompt_template.count(self.processor.image_token)
+            # print(f"[DEBUG] number_of_image_tokens: {number_of_image_tokens}")
         return prompt_template, row_dict, image_grid_thw, raw_prompt
     
     @torch.no_grad()
@@ -184,14 +177,14 @@ class QwenVLLongTrajRolloutManager():
             new_attention_mask[b][valid_tokens:]=0
         
         return new_input_ids, new_attention_mask, new_loss_mask, new_end_of_response_position_mask
-
+    
     @torch.no_grad()
     def reset(self, env_configs):
         """
-        Reset environments based on provided configurations. To avoid interference between environments, we always create new environment instance.
-        1. close unused environments
-        2. create new environments
-        3. reset the recorder
+        Reset environments based on provided configurations, reusing environments when possible.
+        - For env with same config and env_name, reuse the same environment (reset)
+        - For env with different config or env_name, close the old environment and create a new one
+        - Reset the recorder
         
         Args:
             env_configs: List of environment configurations containing env_name, config, and seed
@@ -199,15 +192,20 @@ class QwenVLLongTrajRolloutManager():
         Returns:
             Initial observations and info from all environments
         """
+        # Step 1: Sort environments into buckets by env_name and config
+        # Try to reuse environemnts with the same config and env_name
+        
+        env_buckets = defaultdict(set)
+        new_envs = {}
+        
         if self.envs is None:
             self.envs = {}
-    
-        ## 1. close old environments
+            
         for env_id, env in self.envs.items():
-            env.close()
-        self.envs = {}
+            env_config_id = env.config.config_id()
+            bucket_key = env_config_id
+            env_buckets[bucket_key].add(env_id)
         
-        new_envs = {}
         for i, cfg in enumerate(env_configs):
             env_id = i
             env_name = cfg["env_name"]
@@ -215,44 +213,58 @@ class QwenVLLongTrajRolloutManager():
             seed = cfg["seed"]
             
             # Create bucket key
-            if "config_str" in env_config:
-                env_config = json.loads(env_config["config_str"])
             config_instance= REGISTERED_ENV[env_name]["config_cls"](**env_config)
-            new_envs[env_id] = {
-                "env_cls":REGISTERED_ENV[env_name]["env_cls"],
-                "seed":seed,
-                "config_instance":config_instance,
-            }
+            env_config_id = config_instance.config_id()
+            bucket_key = env_config_id
+            
+            # Check if we have an available environment with the same config
+            if bucket_key in env_buckets and env_buckets[bucket_key]:
+                old_env_id = env_buckets[bucket_key].pop()
+                new_envs[env_id] = {
+                    "env_instance":self.envs[old_env_id],
+                    "seed":seed,
+                }
+            else:
+                # don't initialize the environment here, close unused environments first
+                new_envs[env_id] = {
+                    "env_cls":REGISTERED_ENV[env_name]["env_cls"],
+                    "seed":seed,
+                    "config_instance":config_instance,
+                }
         
-        # Step 2: create environments and obtain obs and info
+        # Close unused environments
+        for bucket_key, env_ids in env_buckets.items():
+            for env_id in env_ids:
+                self.envs[env_id].close()
+                del self.envs[env_id]
+
+        
+        # Step 2: Reset environments and collect observations/info
+        
         if self.recorder is not None:
             del self.recorder
-        
         self.recorder = defaultdict(list)
         initial_obs = {}
         initial_info = {}
         for env_id, env_info in new_envs.items():
-            assert "env_cls" in env_info
-            self.envs[env_id] = env_info["env_cls"](env_info["config_instance"])
+            if "env_instance" in env_info:
+                self.envs[env_id] = env_info["env_instance"]
+            else:
+                assert "env_cls" in env_info
+                self.envs[env_id] = env_info["env_cls"](env_info["config_instance"])
             obs, info = self.envs[env_id].reset(env_info["seed"])
             initial_obs[env_id] = obs
             initial_info[env_id] = info
             self.record(
-                env_id,
-                obs=obs,
-                reward=0.0,
-                done=False,
+                env_id, 
+                obs=obs, 
+                reward=0, 
+                done=False, 
                 info=info
             )
         
-        self.env_states = {
-            env_id: {
-                'step': 0,
-                'done': False,
-                'metrics':{"turn_metrics":defaultdict(list),"traj_metrics":{}}
-            }
-            for env_id in self.envs
-        }
+        self.env_states = {env_id: {'step': 0, 'done': False,'metrics':{"turn_metrics":defaultdict(list),"traj_metrics":{}}} for env_id in self.envs}
+        
         return initial_obs, initial_info
     
     @torch.no_grad()
@@ -278,16 +290,15 @@ class QwenVLLongTrajRolloutManager():
             if image_placeholder in obs['multi_modal_data']:
                 record_entry['image_data'] = [process_image(image) for image in obs['multi_modal_data'][image_placeholder]]
         self.recorder[env_id].append(record_entry)
-        return
 
     @torch.no_grad()
     def _single_recording_to_prompt(self,
-        recording: List[Dict], 
-        step: int, 
-        window_size: int = None,
-        is_final: bool = False,
-        prep_for_loss_mask: bool = False,
-    ):
+                            recording: List[Dict], 
+                            step: int, 
+                            window_size: int = None,
+                            is_final: bool = False,
+                            prep_for_loss_mask: bool = False,
+        ):
         """
         Given a recording, generate the prompt for MLLM
         Chat: Sys -> |InitUser| -> |Assistant, User| -> |Assistant, User| -> ... -> |Assistant, User Final|
@@ -318,35 +329,30 @@ class QwenVLLongTrajRolloutManager():
         image_data=[]
         llm_actions = []
         for i, record in enumerate(history):
-            if i > 0:
+            if i>0:
                 llm_raw_response = record['info']['llm_raw_response']
                 llm_action = record['info'].get('parsed_action', None)
-                filtered_llm_raw_response = self._handle_special_tokens(
-                    llm_raw_response, prep_for_loss_mask=prep_for_loss_mask
-                )
+                filtered_llm_raw_response = self._handle_special_tokens(llm_raw_response, prep_for_loss_mask=prep_for_loss_mask)
                 chat.append({"role": "assistant", "content": filtered_llm_raw_response})
                 rewards.append(record['reward'])
                 llm_actions.append(llm_action)
-            if i < len(history) - 1 or not is_final:
+            if i<len(history)-1 or not is_final:
                 chat.append({"role": "user", "content": record['obs_str']})
                 if 'image_data' in record:
                     for img in record['image_data']:
                         image_data.append(img)
             
-        prompt_with_chat_template = self.tokenizer.apply_chat_template(
-            chat, add_generation_prompt=(not is_final), tokenize=False
-        )
+        prompt_with_chat_template = self.tokenizer.apply_chat_template(chat, add_generation_prompt=(not is_final), tokenize=False)
         if is_final: # NOTE hard coded
             assert prompt_with_chat_template[-1] == '\n', f"The last token should be new line token, got {prompt_with_chat_template[-1]}"
             prompt_with_chat_template = prompt_with_chat_template[:-1] # remove the last in token
         # switch box_end and im_end so that the model can learn to generate <|im_end|>
         prompt_with_chat_template = prompt_with_chat_template.replace(
             f'{self.config.special_token_for_loss_mask[1]}{self.tokenizer.eos_token}',
-            f'{self.tokenizer.eos_token}{self.config.special_token_for_loss_mask[1]}'
-        )
+            f'{self.tokenizer.eos_token}{self.config.special_token_for_loss_mask[1]}')
         
         print((
-            f"[DEBUG] _single_recording_to_prompt: {env_id=} {step=} {window_size=} {is_final=} {rewards=}; "
+            f"[DEBUG] _single_recording_to_prompt: {env_id=} {step=} {is_final=} {rewards=}; "
             f"has {len(image_data)} images."
         ))
         return {
@@ -357,110 +363,12 @@ class QwenVLLongTrajRolloutManager():
         }
     
     @torch.no_grad()
-    def _single_recording_to_windowed_prompts(self,
-        recording: List[Dict], 
-        step: int, 
-        window_size: int = None,
-        prep_for_loss_mask: bool = False,
-    ):
-        """
-        Given a recording, generate the prompt for MLLM
-        Chat: Sys -> |InitUser| -> |Assistant, User| -> |Assistant, User| -> ... -> |Assistant, User Final|
-
-        Args:
-            recording: List of dictionaries containing recorded environment interactions
-            step: Current step to generate prompt for
-            window_size: Number of past steps to include in the context
-            is_final: Whether the prompt is for the final step 
-                - if True, the end of the chat is from the last assistant's response
-            prep_for_loss_mask: whether to use special token to wrap llm response
-            
-        Returns:
-            dict: prompt_with_chat_template : str, image_data: list of images, reward: list of reward
-        """
-        assert step >= 0
-        start_step = 0
-        end_step = min(step, window_size)
-        n_windows = math.ceil(step/window_size)
-        
-        trainable_outputs = []
-        for i in range(n_windows):
-            start_step = i * window_size
-            end_step = min(step, start_step + window_size)
-        
-            assert len(recording) >= end_step + 1, 'History length is not enough'
-            history = recording[start_step: end_step + 1]
-            rewards=[]
-            chat = []
-            
-            env_id = history[0]['env_id']
-            chat.append({"role": "system", "content": self.envs[env_id].system_prompt()})
-
-            image_data=[]
-            llm_actions = []
-            # each record stores (a, s')
-            ## first append s_0
-            if start_step == 0:
-                s_0 = history[0]
-                history = history[1:]
-            else:
-                s_0 = recording[start_step - 1]
-            chat.append({"role": "user", "content": s_0['obs_str']})
-            if 'image_data' in s_0:
-                for img in s_0['image_data']:
-                    image_data.append(img)
-            ## next append a_1, s_1
-            for j, record in enumerate(history):
-                llm_raw_response = record['info']['llm_raw_response']
-                llm_action = record['info'].get('parsed_action', None)
-                filtered_llm_raw_response = self._handle_special_tokens(
-                    llm_raw_response, prep_for_loss_mask=prep_for_loss_mask
-                )
-                chat.append({"role": "assistant", "content": filtered_llm_raw_response})
-                rewards.append(record['reward'])
-                llm_actions.append(llm_action)
-                # add next state IFF not the last step
-                if j != len(history) - 1:
-                    chat.append({"role": "user", "content": record['obs_str']})
-                    if 'image_data' in record:
-                        for img in record['image_data']:
-                            image_data.append(img)
-            assert chat[-1]['role'] == 'assistant', f"The last role should be assistant, got {chat[-1]['role']}"
-                
-            prompt_with_chat_template = self.tokenizer.apply_chat_template(
-                chat, add_generation_prompt=False, tokenize=False
-            )
-            assert prompt_with_chat_template[-1] == '\n', f"The last token should be new line token, got {prompt_with_chat_template[-1]}"
-            prompt_with_chat_template = prompt_with_chat_template[:-1] # remove the last in token
-            # switch box_end and im_end so that the model can learn to generate <|im_end|>
-            prompt_with_chat_template = prompt_with_chat_template.replace(
-                f'{self.config.special_token_for_loss_mask[1]}{self.tokenizer.eos_token}',
-                f'{self.tokenizer.eos_token}{self.config.special_token_for_loss_mask[1]}'
-            )
-            
-            print((
-                f"[DEBUG] _single_recording_to_windowed_prompts: {env_id=} {step=} window={i}/{n_windows} {window_size=} {rewards=}; "
-                f"has {len(image_data)} images."
-            ))
-            trainable_outputs.append({
-                "prompt": prompt_with_chat_template,
-                "llm_actions": llm_actions,
-                "image_data": image_data,
-                "rewards": rewards,
-            })
-        print((
-            f"[DEBUG] _single_recording_to_windowed_prompts output {len(trainable_outputs)} samples for "
-            f"{env_id=} {step=} {window_size=}."
-        ))
-        return trainable_outputs
-
-    @torch.no_grad()
     def _generate_input_for_rollout(
-        self, 
-        recording: List[Dict], 
-        step: int, 
-        window_size: int = None,
-    ):
+            self, 
+            recording: List[Dict], 
+            step: int, 
+            window_size: int = None,
+        ):
         """
         Given a recording, generate the input for MLLM
         
@@ -480,22 +388,13 @@ class QwenVLLongTrajRolloutManager():
         """
         rst=self._single_recording_to_prompt(recording, step, window_size, is_final=False, prep_for_loss_mask=False)
         prompt_with_chat_template=rst['prompt']
-        image_data=rst['image_data']
-        has_images = len(image_data) > 0
+        image_data=rst['image_data']        
+        has_images = len(image_data) > 0        
 
         row_dict = {}
         if has_images:  # expand image token
-            (
-                prompt_with_chat_template,
-                row_dict,
-                _,
-                raw_prompt
-            ) = self._handle_multi_modal_data(
-                prompt_with_chat_template, 
-                row_dict, 
-                image_data, 
-                do_embedding=False
-            )
+            prompt_with_chat_template, row_dict, _, raw_prompt = self._handle_multi_modal_data(
+                prompt_with_chat_template, row_dict, image_data, do_embedding=False)
         else:
             raw_prompt = prompt_with_chat_template
 
@@ -509,15 +408,17 @@ class QwenVLLongTrajRolloutManager():
         # add index for each prompt
         index = row_dict.get("extra_info", {}).get("index", 0)
         row_dict["index"] = index
+
         return row_dict
 
+
     @torch.no_grad()
-    def _generate_input_for_update(
-        self, 
-        recording: List[Dict], 
-        step: int, 
-        window_size: int = None,
-    ):
+    def _generate_input_for_uptate(
+            self, 
+            recording: List[Dict], 
+            step: int, 
+            window_size: int = None,
+        ):
         """
         Given a recording, generate the final input for MLLM
         
@@ -536,117 +437,98 @@ class QwenVLLongTrajRolloutManager():
                 - rest postion_ids: refer to vllm_rollout_spmd.py to check how to compute
 
         """
-        assert window_size is not None, "window_size must be provided for long trajectory"
-        
+
+
+
+        # handle prompt, prompt=pad_token since we now have everything in response and compute a loss mask for them
+        prompt_with_chat_template=self.tokenizer.pad_token 
         
         # handle response
-        response_rsts=self._single_recording_to_windowed_prompts(
-            recording, step, window_size, prep_for_loss_mask=True
-        )
-        row_dicts = []
-        for response_rst in response_rsts:
-            # handle prompt, prompt=pad_token since we now have everything in response 
-            # and compute a loss mask for them
-            prompt_with_chat_template=self.tokenizer.pad_token 
-            response_with_chat_template=response_rst['prompt']
-            image_data=response_rst['image_data']
-            rewards=response_rst['rewards']
+        response_rst=self._single_recording_to_prompt(recording, step, window_size, is_final=True, prep_for_loss_mask=True)
+        response_with_chat_template=response_rst['prompt']
+        image_data=response_rst['image_data']
+        rewards=response_rst['rewards']
+       
+        has_images = len(image_data) > 0
+        row_dict = {}
+        if has_images:  # expand image token
+            response_with_chat_template, row_dict, image_grid_thw, _ = self._handle_multi_modal_data(
+                response_with_chat_template, row_dict, image_data, do_embedding=True)
+
         
-            has_images = len(image_data) > 0
-            row_dict = {}
-            if has_images:  # expand image token
-                (
-                    response_with_chat_template,
-                    row_dict,
-                    image_grid_thw,
-                    _
-                ) = self._handle_multi_modal_data(
-                    response_with_chat_template,
-                    row_dict,
-                    image_data,
-                    do_embedding=True
-                )
-            
-            (
-                input_ids_response, attention_mask_response
-            ) = verl_F.tokenize_and_postprocess_data(
-                prompt=response_with_chat_template,
-                tokenizer=self.tokenizer,
-                max_length=self.config.max_trajectory_length-1, # -1 for the prompt padding token
-                pad_token_id=self.tokenizer.pad_token_id,
-                left_pad=False,
-                truncation=self.config.truncation
-            )
-            (
-                input_ids_prompt, attention_mask_prompt
-            ) = verl_F.tokenize_and_postprocess_data(
-                prompt=prompt_with_chat_template,
-                tokenizer=self.tokenizer,
-                max_length=1,
-                pad_token_id=self.tokenizer.pad_token_id,
-                left_pad=True,
-                truncation=self.config.truncation
-            )
-            attention_mask_prompt=torch.zeros_like(input_ids_prompt) # All prompt will be masked
-            
-            (
-                input_ids_response,
-                attention_mask_response,
-                loss_mask_response,
-                end_of_response_position_mask_response
-            ) = self._compute_loss_mask(
-                input_ids_response, attention_mask_response
-            )
-            
-            input_ids_prompt=input_ids_prompt[0]
-            attention_mask_prompt=attention_mask_prompt[0]
-            loss_mask_prompt = torch.zeros_like(attention_mask_prompt)
-            end_of_response_position_mask_prompt = torch.zeros_like(attention_mask_prompt)
-            
-            input_ids_response=input_ids_response[0]
-            attention_mask_response=attention_mask_response[0]
-            loss_mask_response=loss_mask_response[0]
-            end_of_response_position_mask_response=end_of_response_position_mask_response[0]
-            
-            loss_mask = torch.cat([loss_mask_prompt, loss_mask_response], dim=-1)
-            end_of_response_position_mask = torch.cat([end_of_response_position_mask_prompt, end_of_response_position_mask_response], dim=-1)
-            input_ids = torch.cat([input_ids_prompt, input_ids_response], dim=-1)
-            attention_mask = torch.cat([attention_mask_prompt, attention_mask_response], dim=-1)
-            
-            position_ids_prompt = compute_position_id_with_mask(attention_mask_prompt)
-            # if self.image_key in row_dict:
-            if has_images:
-                from verl.models.transformers.qwen2_vl import get_rope_index
-                position_ids_response = get_rope_index(
-                    self.processor,
-                    image_grid_thw=image_grid_thw,
-                    input_ids=input_ids_response,
-                    attention_mask=attention_mask_response,
-                )  # (3, seq_len)
-                position_ids_prompt=position_ids_prompt.view(1, -1).expand(3, -1)
-            else:
-                response_length = input_ids_response.shape[0]
-                delta_position_id = torch.arange(1, response_length + 1, device=position_ids_prompt.device)
-                position_ids_response = position_ids_prompt[-1:] + delta_position_id
-            
-            if self.config.use_multi_turn_reward:
-                raise NotImplementedError("Multi-turn reward is not supported for long trajectory")
-            if self.config.use_loss_mask:
-                row_dict['loss_mask'] = loss_mask
-            if self.config.use_gae_mask:
-                row_dict['gae_mask'] = loss_mask
-            row_dict["end_of_response_position_mask"] = end_of_response_position_mask # 
-            position_ids = torch.cat([position_ids_prompt, position_ids_response], dim=-1)
-            row_dict['prompts'] = input_ids_prompt
-            row_dict['responses'] = input_ids_response
-            row_dict['input_ids'] = input_ids
-            row_dict['attention_mask'] = attention_mask
-            row_dict['position_ids'] = position_ids
-            index = row_dict.get("extra_info", {}).get("index", 0)
-            row_dict["index"] = index
-            row_dict["step_reward_sum"] = sum(rewards)
-            row_dicts.append(row_dict)
-        return row_dicts
+        input_ids_response, attention_mask_response = verl_F.tokenize_and_postprocess_data(prompt=response_with_chat_template,
+                                                                         tokenizer=self.tokenizer,
+                                                                         max_length=self.config.max_trajectory_length-1, # -1 for the prompt padding token
+                                                                         pad_token_id=self.tokenizer.pad_token_id,
+                                                                         left_pad=False,
+                                                                         truncation=self.config.truncation)
+        input_ids_prompt, attention_mask_prompt = verl_F.tokenize_and_postprocess_data(prompt=prompt_with_chat_template,
+                                                                         tokenizer=self.tokenizer,
+                                                                         max_length=1,
+                                                                         pad_token_id=self.tokenizer.pad_token_id,
+                                                                         left_pad=True,
+                                                                         truncation=self.config.truncation)
+        attention_mask_prompt=torch.zeros_like(input_ids_prompt) # All prompt will be masked
+        
+        
+        input_ids_response, attention_mask_response, loss_mask_response,end_of_response_position_mask_response = self._compute_loss_mask(input_ids_response, attention_mask_response)
+        
+        input_ids_prompt=input_ids_prompt[0]
+        attention_mask_prompt=attention_mask_prompt[0]
+        loss_mask_prompt = torch.zeros_like(attention_mask_prompt)
+        end_of_response_position_mask_prompt = torch.zeros_like(attention_mask_prompt)
+        
+        input_ids_response=input_ids_response[0]
+        attention_mask_response=attention_mask_response[0]
+        loss_mask_response=loss_mask_response[0]
+        end_of_response_position_mask_response=end_of_response_position_mask_response[0]
+        
+        
+        loss_mask = torch.cat([loss_mask_prompt, loss_mask_response], dim=-1)
+        end_of_response_position_mask = torch.cat([end_of_response_position_mask_prompt, end_of_response_position_mask_response], dim=-1)
+        input_ids = torch.cat([input_ids_prompt, input_ids_response], dim=-1)
+        attention_mask = torch.cat([attention_mask_prompt, attention_mask_response], dim=-1)
+        
+        
+        position_ids_prompt = compute_position_id_with_mask(attention_mask_prompt)
+        # if self.image_key in row_dict:
+        if has_images:
+            from verl.models.transformers.qwen2_vl import get_rope_index
+            position_ids_response = get_rope_index(
+                self.processor,
+                image_grid_thw=image_grid_thw,
+                input_ids=input_ids_response,
+                attention_mask=attention_mask_response,
+            )  # (3, seq_len)
+            position_ids_prompt=position_ids_prompt.view(1, -1).expand(3, -1)
+        else:
+            response_length = input_ids_response.shape[0]
+            delta_position_id = torch.arange(1, response_length + 1, device=position_ids_prompt.device)
+            position_ids_response = position_ids_prompt[-1:] + delta_position_id
+        
+        if self.config.use_multi_turn_reward:
+            reward_positions = torch.nonzero(end_of_response_position_mask).squeeze(-1)
+            multi_turn_token_level_rewards = torch.zeros_like(end_of_response_position_mask, dtype=torch.float)
+            assert len(reward_positions) == len(rewards), "Number of rewards does not match number of reward positions"
+            for idx,reward in enumerate(rewards):
+                multi_turn_token_level_rewards[reward_positions[idx]] = reward
+            row_dict["multi_turn_token_level_rewards"] = multi_turn_token_level_rewards # (seq_len,) 
+            row_dict["end_of_response_position_mask"] = end_of_response_position_mask
+        if self.config.use_loss_mask:
+            row_dict['loss_mask'] = loss_mask
+        if self.config.use_gae_mask:
+            row_dict['gae_mask'] = loss_mask
+        row_dict["end_of_response_position_mask"] = end_of_response_position_mask # 
+        position_ids = torch.cat([position_ids_prompt, position_ids_response], dim=-1)
+        row_dict['prompts'] = input_ids_prompt
+        row_dict['responses'] = input_ids_response
+        row_dict['input_ids'] = input_ids
+        row_dict['attention_mask'] = attention_mask
+        row_dict['position_ids'] = position_ids
+        index = row_dict.get("extra_info", {}).get("index", 0)
+        row_dict["index"] = index
+        row_dict["step_reward_sum"] = sum(rewards)
+        return row_dict
 
     @torch.no_grad()
     def generate_batch_for_rollout(self, step, window_size):
@@ -671,22 +553,18 @@ class QwenVLLongTrajRolloutManager():
             batch.append(self._generate_input_for_rollout(self.recorder[env_id], step, window_size))
             self.batch_idx_to_env_id[batch_idx] = env_id
             batch_idx += 1
-        _unpadded_bsz = len(batch) 
         if not batch:
             return None
+        _n_batch = len(batch)
         # if len(batch) % self.config.n_gpus_per_node != 0:
-            # # Pad the batch to make it divisible by n_gpus_per_node
-            # while len(batch) % self.config.n_gpus_per_node != 0:
-            #     # do we need to use copy or not here?
-            #     batch.append(batch[-1].copy())
-        # Pad until it is the same as mini_batch_size
+        #     # Pad the batch to make it divisible by n_gpus_per_node
+        #     while len(batch) % self.config.n_gpus_per_node != 0:
+        #         # do we need to use copy or not here?
+        #         batch.append(batch[-1].copy())
         assert len(batch) <= self.config.mini_batch_size, f"{len(batch)=} > {self.config.mini_batch_size=}"
         while len(batch) < self.config.mini_batch_size:
             batch.append(batch[-1].copy())
-        print((
-            f"[DEBUG] generate_batch_for_rollout: {step=} {window_size=} "
-            f"{len(self.envs)=} from {_unpadded_bsz=} padded to {len(batch)=}"
-        ))
+        print(f"[DEBUG] generate_batch_for_rollout padded from {_n_batch} to {len(batch)}")
         return collate_fn(batch)
     
     @torch.no_grad()
@@ -725,9 +603,6 @@ class QwenVLLongTrajRolloutManager():
                     raw_prompt_ids_array[i] = raw_prompt_ids[i].tolist()
             gen_batch.non_tensor_batch['raw_prompt_ids'] = raw_prompt_ids_array
             
-            print((
-                f"[DEBUG] rollout_loop: calling generate_sequences at {step=} {len(gen_batch)=}; "
-            )) 
             output_batch = self.actor_rollout_wg.generate_sequences(gen_batch)
             
             responses_str = self.tokenizer.batch_decode(
@@ -735,10 +610,6 @@ class QwenVLLongTrajRolloutManager():
                 skip_special_tokens=True
             ) # seems here will remove special token like "<|im_end|>"
             
-            ### trick: to deal with variable batch size during rollout:
-            # 1. repeat/pad batch to equal size but record 'real' batch_ids<->env_id mapping (done by generate_batch_for_rollout)
-            # 2. do generation on the padded batch (done by generate_sequences)
-            # 3. step the envs according to the 'real' batch_ids only (done by the following loop)
             for batch_idx, env_id in self.batch_idx_to_env_id.items(): 
                 obs, reward, done, info = self.envs[env_id].step(responses_str[batch_idx])
                 self.env_states[env_id]['step'] += 1
@@ -760,53 +631,29 @@ class QwenVLLongTrajRolloutManager():
             batch (DataProto): batch of final trajectory of all environments
         """
         batch_list = []
-        # produce num_turns//window_size trajectories
-        max_turns = self.config.max_turns
-        window_size = self.config.window_size
-        assert max_turns % window_size == 0, f"{max_turns=} % {window_size=}"
         for env_id in self.envs.keys():
-            print(f"[DEBUG] generate_batch_for_update: {env_id=} {window_size=} in {len(self.envs)=}")
-            row_dicts = self._generate_input_for_update(
-                recording = self.recorder[env_id],
-                step = self.env_states[env_id]['step'],
-                window_size = window_size,
-            ) 
-            print(f"[DEBUG] generate_batch_for_update: {env_id=} {len(row_dicts)=}")
+            row_dict = self._generate_input_for_uptate(
+                recording=self.recorder[env_id],
+                step=self.env_states[env_id]['step'],
+                window_size=None,
+            )
+            step_reward_sum= row_dict['step_reward_sum']
             last_reward=self.envs[env_id].compute_reward()
-            step_reward_sums = [row_dict['step_reward_sum'] for row_dict in row_dicts]
-            _env_batch_list = []
-            for r_idx, row_dict in enumerate(row_dicts):
-                ### perform backprop here?
-                _reward = last_reward + sum(step_reward_sums)
-                row_dict['reward_model'] = {
-                    "style": "given", "ground_truth": {"reward": _reward}
-                }
-                print(f"[DEBUG] generate_batch_for_update: {env_id=} {r_idx=} {last_reward=}, {step_reward_sums=} {_reward=}")
-                _env_batch_list.append(row_dict)
-            print(f"[DEBUG] generate_batch_for_update: {env_id=} {len(_env_batch_list)=} samples")
-            ### check if we need padding
-            _env_batch_len = len(_env_batch_list)
-            target_n_seq = math.ceil(max_turns / window_size)
-            while len(_env_batch_list) < target_n_seq:
-                _env_batch_list.append(_env_batch_list[-1].copy())
-            print(f"[DEBUG] generate_batch_for_update: {env_id=} {_env_batch_len=} padded to {len(_env_batch_list)=}")
-            batch_list.extend(_env_batch_list)
-
-            # row_dict = self._generate_input_for_update(
-            #     recording = self.recorder[env_id],
-            #     step = self.env_states[env_id]['step'],
-            #     window_size = window_size,
-            # )
-            # step_reward_sum= row_dict['step_reward_sum']
-            # last_reward=self.envs[env_id].compute_reward()
-            # row_dict['reward_model'] = {
-            #     "style": "given", "ground_truth": {"reward": last_reward+step_reward_sum}
-            # }
-            # print(f"[DEBUG] generate_input_for_update: {env_id=} {last_reward=}, {step_reward_sum=}")
-            # if self.config.use_multi_turn_reward:
-            #     raise NotImplementedError("Multi-turn reward is not supported for long trajectory")
-            # batch_list.append(row_dict)
-        print(f"[DEBUG] generate_batch_for_update returning with: {len(batch_list)=}")
+            row_dict['reward_model'] = {"style": "given", "ground_truth": {"reward": last_reward+step_reward_sum}}
+            print(f"[DEBUG] generate_input_for_update: {env_id=} {last_reward=}, {step_reward_sum=}")
+            if self.config.use_multi_turn_reward:
+                end_of_response_position_mask = row_dict['end_of_response_position_mask']
+                reward_positions = torch.nonzero(end_of_response_position_mask).squeeze(-1)
+                last_reward_index = reward_positions[-1]
+                _multi_turn_token_level_rewards = row_dict['multi_turn_token_level_rewards']
+                row_dict['multi_turn_token_level_rewards'][last_reward_index] += last_reward
+                _new_multi_turn_token_level_rewards = row_dict['multi_turn_token_level_rewards']
+                print((
+                    f"[DEBUG] generate_input_for_update: {env_id=} BEFORE: {_multi_turn_token_level_rewards.sum(dim=-1)=}, "
+                    f"AFTER: {_new_multi_turn_token_level_rewards.sum(dim=-1)=}. "
+                    f"RAW: {_multi_turn_token_level_rewards=}, {_new_multi_turn_token_level_rewards=}"
+                ))
+            batch_list.append(row_dict)
         batch_dict = collate_fn(batch_list)
         batch = DataProto.from_single_dict(batch_dict)
         return batch
@@ -823,11 +670,8 @@ class QwenVLLongTrajRolloutManager():
         for env_id, record in self.recorder.items():
             config_id = self.envs[env_id].config.config_id()
             step= self.env_states[env_id]['step']
-            output_rst = self._single_recording_to_prompt(
-                record, self.env_states[env_id]['step'], window_size=None, is_final=False
-            )
+            output_rst = self._single_recording_to_prompt(record, self.env_states[env_id]['step'], window_size=None, is_final=False)
             image= output_rst['image_data']
-            llm_actions = output_rst['llm_actions']
             done = self.env_states[env_id]['done']
             # score = self.envs[env_id].compute_reward()+sum(output_rst['rewards'])
             _terminal_reward = self.envs[env_id].compute_reward()
@@ -836,7 +680,6 @@ class QwenVLLongTrajRolloutManager():
             print((
                 f"[DEBUG] recording_to_log: {env_id=} {step=} {done=} {output_rst['rewards']=} {_terminal_reward=} {score=}; "
                 f"chat with {len(output_rst['image_data'])} images; "
-                f"llm_actions: {llm_actions}; "
                 f"raw_chat: {output_rst['prompt']}"
             ))
             
@@ -856,7 +699,7 @@ class QwenVLLongTrajRolloutManager():
                 "env_id": env_id,
                 "config_id": config_id,
                 "output_str": output_rst['prompt'],
-                "llm_actions": llm_actions,
+                "llm_actions": output_rst['llm_actions'],
                 "image_data": image,
                 "metrics": metrics,
             })

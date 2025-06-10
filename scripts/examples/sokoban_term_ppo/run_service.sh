@@ -3,8 +3,6 @@ set -x
 . /mnt/ddn/alta02/zhouyu/.keys
 export VLLM_ATTENTION_BACKEND=XFORMERS
 export PYTHONHASHSEED=0
-unset WANDB_RUN_GROUP
-export WANDB_RUN_GROUP=sokoban_debug
 
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -18,6 +16,7 @@ fi
 
 # max_trajectory_length = max_prompt_length + max_response_length
 # exp_name="aico_sokoban_terminal_vision"
+env_base_url="http://adaptation.cs.columbia.edu:35000"
 max_turns=3
 window_size=3
 
@@ -28,9 +27,7 @@ rollout_bsz=128
 n_repeats=2
 N_GPUS=4
 
-# exp_name="ppo_sokoban_terminal_vision-use_loss_mask$use_loss_mask-use_gae_mask$use_gae_mask"
-exp_name="ppo_sokoban_terminal_vision-use_loss_mask$use_loss_mask-use_gae_mask$use_gae_mask-run2"
-# exp_name="ppo_sokoban_terminal_vision-longtraj-use_loss_mask$use_loss_mask-use_gae_mask$use_gae_mask"
+exp_name="ppo_sokoban_terminal_vision-service-use_loss_mask$use_loss_mask-use_gae_mask$use_gae_mask"
 train_path=data/sokoban-terminal-vision/train.parquet
 test_path=data/sokoban-terminal-vision/test.parquet
 
@@ -95,11 +92,11 @@ python -m vagen.trainer.main_ppo \
     rollout_manager.use_gae_mask=$use_gae_mask \
     rollout_manager.n_trajectory=$n_repeats \
     rollout_manager.mini_batch_size=$rollout_bsz \
-    rollout_manager.manager_type=default \
+    rollout_manager.manager_type=service \
+    rollout_manager.base_url=$env_base_url \
     trainer.val_before_train=True \
     trainer.val_generations_to_log_to_wandb=8 \
     2>&1 | tee logs/$exp_name.log
-
 
 # clean up ckpt dirs
 python scripts/model_merger_bulk.py merge \

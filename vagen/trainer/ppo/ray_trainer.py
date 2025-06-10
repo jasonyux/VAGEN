@@ -41,8 +41,8 @@ from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn
 from torch.utils.data import RandomSampler, SequentialSampler
 from torchdata.stateful_dataloader import StatefulDataLoader
 
-# from vagen.rollout.qwen_rollout.rollout_manager import QwenVLRolloutManager
-from vagen.rollout.qwen_rollout.rollout_manager_longtraj import QwenVLRolloutManager
+from vagen.rollout.qwen_rollout.rollout_manager import QwenVLRolloutManager
+from vagen.rollout.qwen_rollout.rollout_manager_longtraj import QwenVLLongTrajRolloutManager
 from vagen.rollout.qwen_rollout.rollout_manager_service import QwenVLRolloutManagerService
 from vagen.trainer.ppo.core_algos import (
     compute_reinforce_plus_plus_outcome_advantage_with_loss_mask
@@ -809,21 +809,70 @@ class RayPPOTrainer(object):
         # Lists to collect samples for the table
     
         if self.test_rollout_manager==None:
-            if self.config.rollout_manager.get("use_service",False):
-                self.test_rollout_manager =QwenVLRolloutManagerService(
+            # if self.config.rollout_manager.get("use_service",False):
+            #     self.test_rollout_manager =QwenVLRolloutManagerService(
+            #         actor_rollout_wg=self.actor_rollout_wg,
+            #         config=self.config.rollout_manager,
+            #         tokenizer=self.tokenizer,
+            #         processor=self.processor,
+            #         split="val",
+            #     )
+            # else:
+            #     self.test_rollout_manager =QwenVLRolloutManager(
+            #         actor_rollout_wg=self.actor_rollout_wg,
+            #         config=self.config.rollout_manager,
+            #         tokenizer=self.tokenizer,
+            #         processor=self.processor, 
+            #     )
+            if self.config.rollout_manager.manager_type == "longtraj":
+                rollout_manager = QwenVLLongTrajRolloutManager(
+                    actor_rollout_wg=self.actor_rollout_wg,
+                    config=self.config.rollout_manager,
+                    tokenizer=self.tokenizer,
+                    processor=self.processor,
+                )
+            elif self.config.rollout_manager.manager_type == "service":
+                rollout_manager = QwenVLRolloutManagerService(
                     actor_rollout_wg=self.actor_rollout_wg,
                     config=self.config.rollout_manager,
                     tokenizer=self.tokenizer,
                     processor=self.processor,
                     split="val",
                 )
-            else:
-                self.test_rollout_manager =QwenVLRolloutManager(
+            elif self.config.rollout_manager.manager_type == "default":
+                rollout_manager = QwenVLRolloutManager(
                     actor_rollout_wg=self.actor_rollout_wg,
                     config=self.config.rollout_manager,
                     tokenizer=self.tokenizer,
-                    processor=self.processor, 
+                    processor=self.processor,
                 )
+            elif self.config.rollout_manager.manager_type == "old":
+                from vagen.rollout.qwen_rollout.rollout_manager_old import QwenVLRolloutManager as QwenVLRolloutManagerOld
+                rollout_manager = QwenVLRolloutManagerOld(
+                    actor_rollout_wg=self.actor_rollout_wg,
+                    config=self.config.rollout_manager,
+                    tokenizer=self.tokenizer,
+                    processor=self.processor,
+                )
+            elif self.config.rollout_manager.manager_type == "old2":
+                from vagen.rollout.qwen_rollout.rollout_manager_old2 import QwenVLRolloutManager as QwenVLRolloutManagerOld2
+                rollout_manager = QwenVLRolloutManagerOld2(
+                    actor_rollout_wg=self.actor_rollout_wg,
+                    config=self.config.rollout_manager,
+                    tokenizer=self.tokenizer,
+                    processor=self.processor,
+                )
+            elif self.config.rollout_manager.manager_type == "old3":
+                from vagen.rollout.qwen_rollout.rollout_manager_old3 import QwenVLRolloutManager as QwenVLRolloutManagerOld3
+                rollout_manager = QwenVLRolloutManagerOld3(
+                    actor_rollout_wg=self.actor_rollout_wg,
+                    config=self.config.rollout_manager,
+                    tokenizer=self.tokenizer,
+                    processor=self.processor,
+                )
+            else:
+                raise ValueError(f"Invalid rollout manager type: {self.config.rollout_manager.manager_type}")
+            self.test_rollout_manager = rollout_manager
         
         validation_rst=[]
         
@@ -1123,7 +1172,29 @@ class RayPPOTrainer(object):
         # we start from step 1
         self.global_steps += 1
 
-        if self.config.rollout_manager.get("use_service",False):
+        # if self.config.rollout_manager.get("use_service",False):
+        #     rollout_manager = QwenVLRolloutManagerService(
+        #         actor_rollout_wg=self.actor_rollout_wg,
+        #         config=self.config.rollout_manager,
+        #         tokenizer=self.tokenizer,
+        #         processor=self.processor,
+        #         split="train",
+        #     )
+        # else:
+        #     rollout_manager = QwenVLRolloutManager(
+        #         actor_rollout_wg=self.actor_rollout_wg,
+        #         config=self.config.rollout_manager,
+        #         tokenizer=self.tokenizer,
+        #         processor=self.processor,
+        #     )
+        if self.config.rollout_manager.manager_type == "longtraj":
+            rollout_manager = QwenVLLongTrajRolloutManager(
+                actor_rollout_wg=self.actor_rollout_wg,
+                config=self.config.rollout_manager,
+                tokenizer=self.tokenizer,
+                processor=self.processor,
+            )
+        elif self.config.rollout_manager.manager_type == "service":
             rollout_manager = QwenVLRolloutManagerService(
                 actor_rollout_wg=self.actor_rollout_wg,
                 config=self.config.rollout_manager,
@@ -1131,13 +1202,40 @@ class RayPPOTrainer(object):
                 processor=self.processor,
                 split="train",
             )
-        else:
+        elif self.config.rollout_manager.manager_type == "default":
             rollout_manager = QwenVLRolloutManager(
                 actor_rollout_wg=self.actor_rollout_wg,
                 config=self.config.rollout_manager,
                 tokenizer=self.tokenizer,
                 processor=self.processor,
             )
+        elif self.config.rollout_manager.manager_type == "old":
+            from vagen.rollout.qwen_rollout.rollout_manager_old import QwenVLRolloutManager as QwenVLRolloutManagerOld
+            rollout_manager = QwenVLRolloutManagerOld(
+                actor_rollout_wg=self.actor_rollout_wg,
+                config=self.config.rollout_manager,
+                tokenizer=self.tokenizer,
+                processor=self.processor,
+            )
+        elif self.config.rollout_manager.manager_type == "old2":
+            from vagen.rollout.qwen_rollout.rollout_manager_old2 import QwenVLRolloutManager as QwenVLRolloutManagerOld2
+            rollout_manager = QwenVLRolloutManagerOld2(
+                actor_rollout_wg=self.actor_rollout_wg,
+                config=self.config.rollout_manager,
+                tokenizer=self.tokenizer,
+                processor=self.processor,
+            )
+        elif self.config.rollout_manager.manager_type == "old3":
+            from vagen.rollout.qwen_rollout.rollout_manager_old3 import QwenVLRolloutManager as QwenVLRolloutManagerOld3
+            rollout_manager = QwenVLRolloutManagerOld3(
+                actor_rollout_wg=self.actor_rollout_wg,
+                config=self.config.rollout_manager,
+                tokenizer=self.tokenizer,
+                processor=self.processor,
+            )
+        else:
+            raise ValueError(f"Invalid rollout manager type: {self.config.rollout_manager.manager_type}")
+        print(f"[DEBUG] fit rollout_manager: {rollout_manager}")
 
         for epoch in range(self.config.trainer.total_epochs):
             for batch_dict in self.train_dataloader:

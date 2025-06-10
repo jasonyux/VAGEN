@@ -15,13 +15,14 @@ from vagen.server.client import BatchEnvClient
 
 
 class QwenVLRolloutManagerService():
-    def __init__(self,
-                 actor_rollout_wg,
-                 config,
-                 tokenizer: PreTrainedTokenizer,
-                 processor: Optional[ProcessorMixin] = None,
-                 split="train",
-                 ):
+    def __init__(
+        self,
+        actor_rollout_wg,
+        config,
+        tokenizer: PreTrainedTokenizer,
+        processor: Optional[ProcessorMixin] = None,
+        split="train",
+    ):
         self.split=split
         self.tokenizer = tokenizer
         self.processor = processor
@@ -56,12 +57,12 @@ class QwenVLRolloutManagerService():
     
     @torch.no_grad()
     def _handle_multi_modal_data(
-            self, 
-            prompt_template: str, 
-            row_dict: Dict,
-            image_data: List[PIL.Image.Image],
-            do_embedding: bool = True,
-        ) -> str:
+        self, 
+        prompt_template: str, 
+        row_dict: Dict,
+        image_data: List[PIL.Image.Image],
+        do_embedding: bool = True,
+    ) -> str:
         """Handle multi-modal data in the prompt template
 
         - For do_embedding=False(vllm), replace <image> with <|vision_start|><|image_pad|><|vision_end|> -> raw_prompt
@@ -297,7 +298,7 @@ class QwenVLRolloutManagerService():
             self.envs = {}
         
         ## 1. close old environments
-        ids_to_close= list(self.envs.keys())
+        ids_to_close = list(self.envs.keys())
         self.envs.clear()
         self.env_client.close_batch(ids_to_close)
 
@@ -372,15 +373,16 @@ class QwenVLRolloutManagerService():
             if image_placeholder in obs['multi_modal_data']:
                 record_entry['image_data'] = [process_image(image) for image in obs['multi_modal_data'][image_placeholder]]
         self.recorder[env_id].append(record_entry)
+        return
 
     @torch.no_grad()
     def _single_recording_to_prompt(self,
-                            recording: List[Dict], 
-                            step: int, 
-                            window_size: int = None,
-                            is_final: bool = False,
-                            prep_for_loss_mask: bool = False,
-        ):
+        recording: List[Dict], 
+        step: int, 
+        window_size: int = None,
+        is_final: bool = False,
+        prep_for_loss_mask: bool = False,
+    ):
         """
         Given a recording, generate the prompt for MLLM
         Chat: Sys -> |InitUser| -> |Assistant, User| -> |Assistant, User| -> ... -> |Assistant, User Final|
@@ -396,7 +398,6 @@ class QwenVLRolloutManagerService():
         Returns:
             dict: prompt_with_chat_template : str, image_data: list of images, reward: list of reward
         """
-        
         assert step >= 0
         start_step = max(0, step - window_size) if window_size is not None else 0
         end_step = step
@@ -570,14 +571,10 @@ class QwenVLRolloutManagerService():
         loss_mask_response=loss_mask_response[0]
         end_of_response_position_mask_response=end_of_response_position_mask_response[0]
         
-    
-        
         loss_mask = torch.cat([loss_mask_prompt, loss_mask_response], dim=-1)
         end_of_response_position_mask = torch.cat([end_of_response_position_mask_prompt, end_of_response_position_mask_response], dim=-1)
         input_ids = torch.cat([input_ids_prompt, input_ids_response], dim=-1)
         attention_mask = torch.cat([attention_mask_prompt, attention_mask_response], dim=-1)
-
-        
         
         position_ids_prompt = compute_position_id_with_mask(attention_mask_prompt)
         # if self.image_key in row_dict:
@@ -618,7 +615,6 @@ class QwenVLRolloutManagerService():
         index = row_dict.get("extra_info", {}).get("index", 0)
         row_dict["index"] = index
         row_dict["step_reward_sum"]= sum(rewards)
-        
         return row_dict
 
     @torch.no_grad()
@@ -738,7 +734,7 @@ class QwenVLRolloutManagerService():
             row_dict = self._generate_input_for_update(
                 recording = self.recorder[env_id],
                 step = self.env_states[env_id]['step'],
-                window_size = self.config.window_size,
+                window_size = None,  # use the full trajectory as a sequence
             )
             step_reward_sum= row_dict['step_reward_sum']
             last_reward = reward_rst[env_id]
