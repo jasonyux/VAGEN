@@ -638,7 +638,8 @@ class QwenVLRolloutManagerService():
             row_dict = self._generate_input_for_update(
                 recording = self.recorder[env_id],
                 step = self.env_states[env_id]['step'],
-                window_size = None,  # use the full trajectory as a sequence
+                # window_size = None,  # use the full trajectory as a sequence (TODO: this has image token truncation issues)
+                window_size = self.config.window_size,
             )
             step_reward_sum= row_dict['step_reward_sum']
             last_reward = reward_rst[env_id]

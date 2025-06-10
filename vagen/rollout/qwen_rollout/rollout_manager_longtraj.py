@@ -379,8 +379,6 @@ class QwenVLLongTrajRolloutManager():
             dict: prompt_with_chat_template : str, image_data: list of images, reward: list of reward
         """
         assert step >= 0
-        start_step = 0
-        end_step = min(step, window_size)
         n_windows = math.ceil(step/window_size)
         
         trainable_outputs = []
@@ -402,6 +400,7 @@ class QwenVLLongTrajRolloutManager():
             ## first append s_0
             if start_step == 0:
                 s_0 = history[0]
+                assert 'llm_raw_response' not in s_0['info'], "s_0 should not have llm_raw_response"
                 history = history[1:]
             else:
                 s_0 = recording[start_step - 1]
