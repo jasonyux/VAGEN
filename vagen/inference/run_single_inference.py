@@ -101,7 +101,6 @@ def main():
     # Process each model
     model_cfg = {
         "provider": "vllm",
-        "model_id": args.model_id,
         "model_name": args.model_name,
         "max_tokens": args.max_tokens,
         "top_p": args.top_p,
@@ -109,7 +108,7 @@ def main():
         "tensor_parallel_size": args.tensor_parallel_size,
         "trust_remote_code": True,
     }
-    model_name = model_cfg["model_id"]
+    model_name = args.model_id
     logger.info(f"Running inference for model: {model_name}")
     
     # Setup wandb for this model
