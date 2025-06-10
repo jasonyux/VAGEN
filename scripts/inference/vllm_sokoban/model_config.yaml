@@ -19,16 +19,72 @@ models:
   #   gpu_memory_utilization: 0.8
   #   dtype: bfloat16
   #   trust_remote_code: true
-  qwen2.5-vl-3b-aico:
+  # qwen2.5-vl-3b-aico:
+  #   provider: vllm
+  #   model_name: checkpoints/dyna_rl/reserved/aico_sokoban_terminal_vision/global_step_200/checkpoint-200-actor
+  #   max_tokens: 2048
+  #   top_p: 0.95
+  #   temperature: 0.7
+  #   tensor_parallel_size: 2
+  #   gpu_memory_utilization: 0.8
+  #   dtype: bfloat16
+  #   trust_remote_code: true
+  # checkpoints/dyna_rl/ppo_sokoban_terminal_vision-2642a55-use_loss_maskTrue-use_gae_maskTrue-run2/global_step_200/checkpoint-200-actor
+  # qwen2.5-vl-3b-ppo-2642a55:
+  #   provider: vllm
+  #   model_name: checkpoints/dyna_rl/ppo_sokoban_terminal_vision-2642a55-use_loss_maskTrue-use_gae_maskTrue-run2/global_step_200/checkpoint-200-actor
+  #   max_tokens: 2048
+  #   top_p: 0.95
+  #   temperature: 0.7
+  #   tensor_parallel_size: 2
+  # checkpoints/dyna_rl/ppo_sokoban_terminal_vision-longtraj-use_loss_maskTrue-use_gae_maskTrue-run2/global_step_200/checkpoint-200-actor
+  # qwen2.5-vl-3b-ppo-longtraj:
+  #   provider: vllm
+  #   model_name: checkpoints/dyna_rl/ppo_sokoban_terminal_vision-longtraj-use_loss_maskTrue-use_gae_maskTrue-run2/global_step_200/checkpoint-200-actor
+  #   max_tokens: 2048
+  #   top_p: 0.95
+  #   temperature: 0.7
+  #   tensor_parallel_size: 2
+  # checkpoints/dyna_rl/ppo_sokoban_terminal_old-use_loss_maskTrue-use_gae_maskTrue/global_step_200/checkpoint-200-actor
+  # qwen2.5-vl-3b-ppo-old:
+  #   provider: vllm
+  #   model_name: checkpoints/dyna_rl/ppo_sokoban_terminal_old-use_loss_maskTrue-use_gae_maskTrue/global_step_200/checkpoint-200-actor
+  #   max_tokens: 2048
+  #   top_p: 0.95
+  #   temperature: 0.7
+  #   tensor_parallel_size: 2
+  # checkpoints/dyna_rl/ppo_sokoban_terminal_vision-use_loss_maskTrue-use_gae_maskTrue/global_step_200
+  # qwen2.5-vl-3b-ppo-default:
+  #   provider: vllm
+  #   model_name: checkpoints/dyna_rl/ppo_sokoban_terminal_vision-use_loss_maskTrue-use_gae_maskTrue/global_step_200/checkpoint-200-actor
+  #   max_tokens: 2048
+  #   top_p: 0.95
+  #   temperature: 0.7
+  #   tensor_parallel_size: 2
+  # checkpoints/dyna_rl/ppo_sokoban_terminal_old2-use_loss_maskTrue-use_gae_maskTrue/global_step_200
+  # qwen2.5-vl-3b-ppo-old2:
+  #   provider: vllm
+  #   model_name: checkpoints/dyna_rl/ppo_sokoban_terminal_old2-use_loss_maskTrue-use_gae_maskTrue/global_step_200/checkpoint-200-actor
+  #   max_tokens: 2048
+  #   top_p: 0.95
+  #   temperature: 0.7
+  #   tensor_parallel_size: 2
+  # checkpoints/dyna_rl/ppo_sokoban_terminal_old3-use_loss_maskTrue-use_gae_maskTrue/global_step_200
+  # qwen2.5-vl-3b-ppo-old3:
+  #   provider: vllm
+  #   model_name: checkpoints/dyna_rl/ppo_sokoban_terminal_old3-use_loss_maskTrue-use_gae_maskTrue/global_step_200/checkpoint-200-actor
+  #   max_tokens: 2048
+  #   top_p: 0.95
+  #   temperature: 0.7
+  #   tensor_parallel_size: 2
+  # checkpoints/dyna_rl/ppo_sokoban_terminal_vision-use_loss_maskTrue-use_gae_maskTrue-run2/global_step_200/checkpoint-200-actor
+  qwen2.5-vl-3b-ppo-run2:
     provider: vllm
-    model_name: checkpoints/dyna_rl/reserved/aico_sokoban_terminal_vision/global_step_200/checkpoint-200-actor
+    model_name: checkpoints/dyna_rl/ppo_sokoban_terminal_vision-use_loss_maskTrue-use_gae_maskTrue-run2/global_step_200/checkpoint-200-actor
     max_tokens: 2048
     top_p: 0.95
     temperature: 0.7
     tensor_parallel_size: 2
-    gpu_memory_utilization: 0.8
-    dtype: bfloat16
-    trust_remote_code: true
   # gpt4o:
   #   provider: openai
   #   model_name: gpt-4o
