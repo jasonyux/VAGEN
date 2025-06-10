@@ -6,6 +6,7 @@ from typing import List, Dict, Tuple, Optional, Any
 from collections import defaultdict
 from tqdm import tqdm
 import PIL
+import json
 
 from vagen.rollout.base_rollout import BaseRollout
 from vagen.server.client import BatchEnvClient
@@ -95,11 +96,14 @@ class InferenceRolloutService(BaseRollout):
         
         for i, cfg in enumerate(env_configs):
             env_id = f"{self.split}_{i}"
+            env_config = cfg["env_config"]
             ids2configs[env_id] = cfg
             ids2seeds[env_id] = cfg.get("seed", 42)
             
             # Store configuration for reference
-            self.envs[env_id] = REGISTERED_ENV[cfg["env_name"]]["config_cls"](**cfg["env_config"])
+            if "config_str" in env_config:
+                env_config = json.loads(env_config["config_str"])
+            self.envs[env_id] = REGISTERED_ENV[cfg["env_name"]]["config_cls"](**env_config)
         
         if self.debug:
             print(f"Creating {len(env_configs)} environments...")
