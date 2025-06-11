@@ -35,6 +35,8 @@ class DockerProvider(Provider):
         temp_dir = Path(os.getenv('TEMP') if platform.system() == 'Windows' else '/tmp')
         self.lock_file = temp_dir / "docker_port_allocation.lck"
         self.lock_file.parent.mkdir(parents=True, exist_ok=True)
+        self.paused = False
+        return
 
     def _get_used_ports(self):
         """Get all currently used ports (both system and Docker)."""
@@ -159,3 +161,17 @@ class DockerProvider(Provider):
                 self.vnc_port = None
                 self.chromium_port = None
                 self.vlc_port = None
+    
+    def pause_emulator(self):
+        if self.container and not self.paused:
+            logger.info("Pausing VM...")
+            self.container.pause()
+            self.paused = True
+        return
+    
+    def unpause_emulator(self):
+        if self.container and self.paused:
+            logger.info("Unpausing VM...")
+            self.container.unpause()
+            self.paused = False
+        return

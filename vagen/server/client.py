@@ -129,8 +129,10 @@ class BatchEnvClient:
         # Deserialize observations
         deserialized_results = {}
         for env_id, (observation, info) in results.items():
-            deserialized_results[env_id] = (deserialize_observation(observation), info)
-            
+            if observation is not None:
+                deserialized_results[env_id] = (deserialize_observation(observation), info)
+            else:
+                deserialized_results[env_id] = (None, info)
         return deserialized_results
     
     def step_batch(self, ids2actions: Dict[str, str]) -> Dict[str, Tuple[Dict, float, bool, Dict]]:
@@ -149,8 +151,11 @@ class BatchEnvClient:
         # Deserialize observations
         deserialized_results = {}
         for env_id, serialized_result  in results.items():
-            deserialized_results[env_id] = deserialize_step_result(serialized_result)
-            
+            obs, _, _, _ = serialized_result
+            if obs is not None:
+                deserialized_results[env_id] = deserialize_step_result(serialized_result)
+            else:
+                deserialized_results[env_id] = (None, 0.0, False, {})
         return deserialized_results
     
     def compute_reward_batch(self, env_ids: List[str]) -> Dict[str, float]:

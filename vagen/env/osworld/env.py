@@ -79,7 +79,9 @@ class OSWorldEnv(BaseEnv):
         return
     
     def _reset_env(self):
+        self.env.provider.unpause_emulator()
         obs = self.env.reset(task_config=self.task_config)
+        self.env.provider.pause_emulator()
         return obs
     
     def reset(self, seed=None):
@@ -115,11 +117,13 @@ class OSWorldEnv(BaseEnv):
     
     def _evaluate(self) -> float:
         ### really call env to evaluate
+        self.env.provider.unpause_emulator()
         last_action = self._last_action
         print(f'evaluating env {self._env_id=} at {self._nsteps=} with {last_action=}')
         raw_score = self.env.evaluate()
         raw_score = float(raw_score)
         success = 1.0 if raw_score == 1.0 else 0.0
+        self.env.provider.pause_emulator()
         
         # #### start of normal env reward logic
         # # zero intermediate reward if: 1) episode not finished; 2) max_steps not reached
@@ -223,7 +227,9 @@ class OSWorldEnv(BaseEnv):
             action = parsed_actions[0].strip()
             action = self._action_guardrail(action)
             try:
+                self.env.provider.unpause_emulator()
                 obs, reward, done, _ = self.env.step(action)
+                self.env.provider.pause_emulator()
             except Exception as e:
                 print(f'error stepping env {self._env_id=} with action {action}: {e}')
                 return None, 0.0, False, {}
@@ -287,6 +293,7 @@ class OSWorldEnv(BaseEnv):
         print(f'closing env {self._env_id=}')
         closed = False
         try:
+            self.env.provider.unpause_emulator()
             self.env.close()
             closed = True
         except Exception as e:

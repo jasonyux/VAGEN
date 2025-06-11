@@ -32,8 +32,13 @@ class OSWorldService(BaseService):
     
     def _reset_single_env(self, env_id: str, seed: Any) -> Tuple[Any, Any]:
         env = self.environments[env_id]
-        observation, info = env.reset(seed=seed)
-        serialized_observation = serialize_observation(observation)
+        serialized_observation = None
+        info = {}
+        try:
+            observation, info = env.reset(seed=seed)
+            serialized_observation = serialize_observation(observation)
+        except Exception as e:
+            print(f"[DEBUG] OSWorldService _reset_single_env {env_id=} {e=}")
         return env_id, (serialized_observation, info)
     
     def reset_batch(self, ids2seeds: Dict[Any, Any]) -> Dict[Any, Tuple[Any, Any]]:
@@ -56,8 +61,15 @@ class OSWorldService(BaseService):
     
     def _step_single_env(self, env_id: str, action: Any) -> Tuple[Any, Any]:
         env = self.environments[env_id]
-        observation, reward, done, info = env.step(action)
-        serialized_observation = serialize_observation(observation)
+        serialized_observation = None
+        reward = 0.0
+        done = False
+        info = {}
+        try:
+            observation, reward, done, info = env.step(action)
+            serialized_observation = serialize_observation(observation)
+        except Exception as e:
+            print(f"[DEBUG] OSWorldService _step_single_env {env_id=} {e=}")
         return env_id, (serialized_observation, reward, done, info)
     
     @service_state_reward_wrapper

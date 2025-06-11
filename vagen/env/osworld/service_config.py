@@ -4,4 +4,4 @@ from dataclasses import dataclass, fields, field
 @dataclass
 class OSWorldServiceConfig(BaseServiceConfig):
     use_state_reward: bool = False
-    max_workers: int = 5
+    max_workers: int = 8
